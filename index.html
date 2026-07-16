@@ -20282,18 +20282,22 @@ v1813DrawVillageBuildings=function(village){
   function specialBuildingTypeDefinition(typeId){
     const type=(specialLocationsApi()?.types?.()||[]).find(entry=>entry.id===typeId)||null;
     const building=type?.building||{};
+    const known=Boolean(type);
     return {
       id:typeId,
+      known,
       icon:type?.icon||'📍',
       name:type?.name||'Sondergebäude',
-      description:type?.description||'Dieses Sondergebäude wird über das Dorfmenü ausgebaut.',
+      description:type?.description||'Dieser Sonderort besitzt derzeit keine vollständige Gebäudedefinition.',
       maxLevel:Math.max(1,Math.floor(Number(building.maxLevel)||3)),
       buildTime:Math.max(0,Number(building.buildTime)||0),
       baseCost:building.baseCost||{gold:40,wood:30,stone:30},
-      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0,1,2,3],
+      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0],
       effectLabel:building.effectLabel||'Effekt',
-      upgradeable:building.upgradeable!==false,
-      statusText:building.statusText||'Dieses Sondergebäude kann aktuell nicht ausgebaut werden.'
+      upgradeable:known&&building.upgradeable!==false,
+      statusText:known
+        ? (building.statusText||'Dieses Sondergebäude kann aktuell nicht ausgebaut werden.')
+        : 'Unbekannter Sondertyp: sichtbar, aber nicht ausbaubar.'
     };
   }
 
@@ -20310,6 +20314,7 @@ v1813DrawVillageBuildings=function(village){
   }
 
   function specialBuildingEffectText(definition,level){
+    if(!definition?.known)return 'Unbekannter Sondertyp – keine definierte Wirkung.';
     const value=specialBuildingEffectValue(definition,level);
     if(definition.id==='watchTower')return `${formatSpecialValue(value)} Sichtweite im eigenen Territorium.`;
     return `+${formatSpecialValue(value)} ${definition.effectLabel}.`;
@@ -22625,22 +22630,118 @@ Vorherige v18.48 Stabilitätsphase:
   window.DorfkriegFarmerTimingState=farmerTimingState;
 
   const priorInterval=automaticProductionInterval;
+  function trainingLevelFor(unitType,faction){
+    const progress=factionUnitProgress(faction)?.[unitType];
+    const branches=progress?.branches;
+    if(branches&&Number.isFinite(branches.production)){
+      return Math.max(0,Math.floor(Number(branches.production))-1);
+    }
+    return 0;
+  }
+
+  function getUnitTrainingTime(unitType,village,faction,gameState={}){
+    const safeType=(UNIT_TYPES[unitType]&&unitType)||'farmer';
+    const owner=faction??village?.owner;
+    const baseTime=Number((window.UNIT_SPAWN_BASE_SECONDS||{})[safeType]||6);
+    const priorValue=Number(priorInterval(village,safeType));
+    let effective=Number.isFinite(priorValue)?priorValue:baseTime;
+
+    const trainingLevel=trainingLevelFor(safeType,owner);
+    const legacyTrainingMultiplier=1+trainingLevel*.05;
+    const targetTrainingMultiplier=1+trainingLevel*.08;
+    const trainingAdjustment=legacyTrainingMultiplier/Math.max(.001,targetTrainingMultiplier);
+    effective*=trainingAdjustment;
+
+    const modifiers=[];
+    if(trainingLevel>0){
+      modifiers.push({
+        key:'training',
+        label:'Ausbildung',
+        factor:1/Math.max(.001,targetTrainingMultiplier),
+        speedBonus:trainingLevel*.08,
+        level:trainingLevel
+      });
+    }
+
+    if(safeType==='farmer'&&village){
+      const state=farmerTimingState(village);
+      const inStartup=state.progress<=.001;
+      const phaseFactor=inStartup?1:state.balanceFactor;
+      const saturationFactor=inStartup?1:state.saturationFactor;
+
+      effective*=phaseFactor;
+      effective*=saturationFactor;
+
+      modifiers.push({
+        key:'startupPhase',
+        label:'Anlaufphase',
+        factor:1,
+        note:inStartup
+          ? 'erste 5 Minuten ohne Mid-/Lategame-Bremse'
+          : `Reichsorganisation ${Math.round(state.progress*100)} %`
+      });
+
+      if(!inStartup){
+        modifiers.push({
+          key:'phaseScaling',
+          label:'Spielphasen-Bremse',
+          factor:phaseFactor,
+          note:'setzt ab Minute 5 sanft ein'
+        });
+        modifiers.push({
+          key:'saturation',
+          label:`Bauernbestand ${state.force}/${state.cap}`,
+          factor:saturationFactor,
+          note:'hohe Auslastung verlängert den Timer leicht'
+        });
+      }
+    }
+
+    effective=Math.max(.8,effective);
+    return {
+      unitType:safeType,
+      baseTime,
+      effectiveTime:effective,
+      trainingLevel,
+      trainingSpeedBonus:trainingLevel*.08,
+      modifiers
+    };
+  }
+  window.getUnitTrainingTime=getUnitTrainingTime;
+
   automaticProductionInterval=function(village,type){
-    const value=Number(priorInterval(village,type));
-    if(type!=='farmer')return value;
-    const state=farmerTimingState(village);
-    return Math.max(state.minimumInterval,value*state.balanceFactor*state.saturationFactor);
+    return Number(getUnitTrainingTime(type,village,village?.owner,{worldTime}).effectiveTime);
   };
+
+  function getSpawnStartXp(unitType,village,faction,context={}){
+    if(!village||faction===FACTIONS.NEUTRAL)return 0;
+    if(unitType==='farmer')return 1;
+    return 0;
+  }
+  window.getSpawnStartXp=getSpawnStartXp;
 
   // Keine harte Sperre mehr. Die Zeitbremse setzt erst ab Minute fünf ein.
   const priorSpawn=spawnAutomaticUnit;
   spawnAutomaticUnit=function(village,type){
+    const beforeRecruits=Number(village?.totalRecruits)||0;
     if(type==='farmer'&&village.productionBlockedReason==='farmer_soft_cap'){
       village.productionBlocked=false;
       village.productionBlockedType='';
       village.productionBlockedReason='';
     }
-    return priorSpawn(village,type);
+    const spawned=priorSpawn(village,type);
+    if(
+      spawned&&
+      (Number(village?.totalRecruits)||0)>beforeRecruits
+    ){
+      const startXp=getSpawnStartXp(type,village,village.owner,{
+        source:'automaticProduction',
+        worldTime,
+        underAttack:villageIsUnderAttack(village)
+      });
+      if(startXp>0)addUnitXp(village.owner,type,startXp,'Spawn');
+    }
+    return spawned;
   };
 
   // Audit-Erweiterung: Außenanzeige und Garnisonslogik verwenden denselben Wert.
@@ -22885,59 +22986,41 @@ Vorherige v18.48 Stabilitätsphase:
   const factorLabel=f=>Number(f)>1.0005?'langsamer':Number(f)<.9995?'schneller':'neutral';
 
   function activeProductionTimeDetails(village,type){
-    const base=Number((window.UNIT_SPAWN_BASE_SECONDS||{})[type]||({farmer:6,sword:10,archer:12,cavalry:17}[type])||6);
-    const effective=Number(automaticProductionInterval(village,type));
+    const details=(typeof window.getUnitTrainingTime==='function')
+      ? window.getUnitTrainingTime(type,village,village?.owner,{worldTime})
+      : {
+          baseTime:Number((window.UNIT_SPAWN_BASE_SECONDS||{})[type]||6),
+          effectiveTime:Number(automaticProductionInterval(village,type)),
+          trainingLevel:0,
+          trainingSpeedBonus:0,
+          modifiers:[]
+        };
+
     const factors=[];
-    let accounted=1;
-
-    if(type==='farmer'){
-      let farmFactor=1;
-      try{
-        if(village.economy==='farm' && typeof ensureEconomyLevel==='function' && ensureEconomyLevel(village)>0){
-          const level=ensureEconomyLevel(village);
-          farmFactor=Number((window.V184_FARMER_TIMER_MULTIPLIER||{})[level]||1);
-          if(Math.abs(farmFactor-1)>.0005){factors.push({name:`Bauernhof Stufe ${level}`,factor:farmFactor});accounted*=farmFactor;}
-        }
-      }catch(_){ }
-
-      try{
-        const state=typeof window.DorfkriegFarmerTimingState==='function'?window.DorfkriegFarmerTimingState(village):null;
-        if(state){
-          if(state.progress<=.001){
-            factors.push({name:'Anlaufphase',factor:1,note:'erste 5 Minuten ohne Mid-/Lategame-Bremse'});
-          }else{
-            factors.push({name:`Reichsorganisation ${Math.round(state.progress*100)} %`,factor:state.balanceFactor,note:'setzt ab Minute 5 über 10 Minuten sanft ein'});
-            accounted*=state.balanceFactor;
-            factors.push({name:`Bauernbestand ${state.force}/${state.cap}`,factor:state.saturationFactor,note:'hohe Auslastung verlängert den Timer leicht'});
-            accounted*=state.saturationFactor;
-          }
-          const raw=base*accounted;
-          if(raw<state.minimumInterval-.001)factors.push({name:'Mindestabstand',factor:state.minimumInterval/Math.max(.001,raw),note:`aktuell mindestens ${state.minimumInterval.toFixed(1)} s`});
-        }
-      }catch(_){ }
-    }else{
-      try{
-        const facility=UNIT_TYPES[type]?.facility;
-        if(facility&&typeof facilityLevel==='function'){
-          const level=facilityLevel(village,facility);
-          const fm=Number(typeof facilityTimerMultiplier==='function'?facilityTimerMultiplier(village,type):1);
-          if(level>0||Math.abs(fm-1)>.0005){
-            const name=(MILITARY_FACILITIES[facility]?.name||facility)+` Stufe ${level}`;
-            factors.push({name,factor:fm});accounted*=fm;
-          }
-        }
-      }catch(_){ }
+    const trainingPercent=Math.round((details.trainingSpeedBonus||0)*100);
+    if(trainingPercent>0){
+      factors.push({
+        name:`Ausbildung: +${trainingPercent} % Geschwindigkeit`,
+        factor:1/Math.max(.001,1+(details.trainingSpeedBonus||0)),
+        note:`Stufe ${details.trainingLevel||0}`
+      });
     }
 
-    // Die Restkomponente garantiert, dass Erklärung und tatsächlich aktive Formel exakt übereinstimmen,
-    // auch wenn ein älterer Patch noch einen weiteren Bonus oder Malus einbringt.
-    const expected=base*accounted;
-    const residual=effective/Math.max(.001,expected);
-    if(Number.isFinite(residual)&&Math.abs(residual-1)>.005){
-      factors.push({name:'Weitere aktive Boni/Mali',factor:residual,note:'aus zentraler Spielformel'});
-      accounted*=residual;
+    for(const modifier of details.modifiers||[]){
+      if(modifier.key==='training')continue;
+      factors.push({
+        name:modifier.label||modifier.key||'Modifier',
+        factor:Number.isFinite(Number(modifier.factor))?Number(modifier.factor):1,
+        note:modifier.note||''
+      });
     }
-    return {base,effective,factors,totalFactor:effective/Math.max(.001,base)};
+
+    return {
+      base:Number(details.baseTime||0),
+      effective:Number(details.effectiveTime||0),
+      factors,
+      totalFactor:Number(details.effectiveTime||0)/Math.max(.001,Number(details.baseTime||1))
+    };
   }
   window.DorfkriegProductionTimeDetails=activeProductionTimeDetails;
 
@@ -24610,16 +24693,22 @@ Vorherige v18.48 Stabilitätsphase:
   globalThis.getSpecialLocationTypeDefinition=function(typeId){
     const type=specialLocationTypes.get(typeId);
     const building=type?.building||{};
+    const known=Boolean(type);
     return {
       id:typeId,
+      known,
       icon:type?.icon||'📍',
       name:type?.name||'Sondergebäude',
-      description:type?.description||'Dieses Sondergebäude wird über das Dorfmenü ausgebaut.',
+      description:type?.description||'Dieser Sonderort besitzt derzeit keine vollständige Gebäudedefinition.',
       maxLevel:Math.max(1,Math.floor(Number(building.maxLevel)||3)),
       buildTime:Math.max(0,Number(building.buildTime)||0),
       baseCost:building.baseCost||{gold:40,wood:30,stone:30},
-      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0,1,2,3],
-      effectLabel:building.effectLabel||'Effekt'
+      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0],
+      effectLabel:building.effectLabel||'Effekt',
+      upgradeable:known&&building.upgradeable!==false,
+      statusText:known
+        ? (building.statusText||'Dieses Sondergebäude kann aktuell nicht ausgebaut werden.')
+        : 'Unbekannter Sondertyp: sichtbar, aber nicht ausbaubar.'
     };
   };
   globalThis.getSpecialLocationEffectValue=function(typeId,level){
@@ -24630,6 +24719,7 @@ Vorherige v18.48 Stabilitätsphase:
   };
   globalThis.getSpecialLocationEffectText=function(typeId,level){
     const definition=globalThis.getSpecialLocationTypeDefinition(typeId);
+    if(!definition.known)return 'Unbekannter Sondertyp – keine definierte Wirkung.';
     const value=globalThis.getSpecialLocationEffectValue(typeId,level);
     const formatted=(Number(value)||0).toFixed(Math.abs((Number(value)||0)-Math.round(Number(value)||0))>.001?2:0).replace('.',',');
     if(definition.id==='watchTower')return `${formatted} Sichtweite im eigenen Territorium.`;
@@ -24768,7 +24858,6 @@ Vorherige v18.48 Stabilitätsphase:
     invasionsEnabled:invasionState.enabled
   });
 
-  console.info('Dorfkrieg v19.5.8: V19-Modulkern bereit.',manager.validate());
 })();
 </script>
 
@@ -24973,7 +25062,6 @@ M.register({id:'LivingWorld',version:'1.0.0',dependencies:['EventMessages','Spec
 M.initializeAll();
 if(document.body.classList.contains('game-started'))M.startAll();
 globalThis.DorfkriegLivingWorld=()=>({version:'19.2',audit:M.validate(),locations:locations.all(),bandits:state.bandits.map(c=>({...c}))});
-console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
 })();
 </script>
 
@@ -24992,8 +25080,9 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
 
   const TYPES={
     goldMine:{icon:'⛏️',name:'Goldmine',short:'G',color:'#efc75d',dark:'#73561d',bonus:'+0,2 Gold/Sek.',preferred:['mountain','hills']},
-    woodCamp:{icon:'🌲',name:'Holzlager',short:'H',color:'#88c46c',dark:'#315c2c',bonus:'+0,2 Holz/Sek.',preferred:['forest','grassland']},
-    watchTower:{icon:'👁️',name:'Wachturm',short:'W',color:'#9bc9e8',dark:'#31586d',bonus:'Erweiterte Sicht',preferred:['grassland','hills']}
+    woodCamp:{icon:'🌲',name:'Forstplatz',short:'H',color:'#88c46c',dark:'#315c2c',bonus:'+0,2 Holz/Sek.',preferred:['forest','grassland']},
+    stoneQuarry:{icon:'🪨',name:'Steinbruch',short:'S',color:'#b9bec2',dark:'#666b70',bonus:'+0,2 Stein/Sek.',preferred:['mountain','hills']},
+    watchTower:{icon:'👁️',name:'Aussichtsposten',short:'W',color:'#9bc9e8',dark:'#31586d',bonus:'Territoriale Sicht',preferred:['grassland','hills']}
   };
   const state={generationKey:'',lastCount:0,lastNoticeKey:'',clickAt:0};
 
@@ -25040,7 +25129,7 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
   function fallback(type,index,chosen){
     const cx=villages.reduce((n,v)=>n+v.x,0)/Math.max(1,villages.length);
     const cy=villages.reduce((n,v)=>n+v.y,0)/Math.max(1,villages.length);
-    const typeIndex=['goldMine','woodCamp','watchTower'].indexOf(type);
+    const typeIndex=['goldMine','woodCamp','stoneQuarry','watchTower'].indexOf(type);
     for(let attempt=0;attempt<18;attempt++){
       const angle=.8+typeIndex*2.05+index*2.3+attempt*.37;
       const radius=175+index*110+(attempt%4)*35;
@@ -25057,7 +25146,7 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
     if(current.length>=required*3){state.generationKey=key;return;}
 
     const candidates=roadPoints(),chosen=current.map(x=>({x:x.x,y:x.y}));
-    const totals={goldMine:current.filter(x=>x.type==='goldMine').length,woodCamp:current.filter(x=>x.type==='woodCamp').length,watchTower:current.filter(x=>x.type==='watchTower').length};
+    const totals={goldMine:current.filter(x=>x.type==='goldMine').length,woodCamp:current.filter(x=>x.type==='woodCamp').length,stoneQuarry:current.filter(x=>x.type==='stoneQuarry').length,watchTower:current.filter(x=>x.type==='watchTower').length};
     for(const type of Object.keys(TYPES)){
       while(totals[type]<required){
         let best=null,bestScore=-Infinity;
@@ -25077,7 +25166,7 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
     if(state.lastNoticeKey!==noticeKey){
       state.lastNoticeKey=noticeKey;
       const msg=M.get('EventMessages');
-      msg?.notify?.('🌍 Lebendige Welt',`${totals.goldMine} Goldminen, ${totals.woodCamp} Holzlager und ${totals.watchTower} Wachtürme sind jetzt als echte Kartenobjekte aktiv.`,{duration:8});
+      msg?.notify?.('🌍 Lebendige Welt',`${totals.goldMine} Goldminen, ${totals.woodCamp} Forstplätze, ${totals.stoneQuarry} Steinbrüche und ${totals.watchTower} Aussichtsposten sind jetzt als echte Kartenobjekte aktiv.`,{duration:8});
     }
   }
 
@@ -25100,6 +25189,9 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
     }else if(loc.type==='woodCamp'){
       ctx.fillStyle='#b47a42';for(let i=-1;i<=1;i++){ctx.fillRect(-15,i*7-2,30,5);ctx.fillStyle='#d8a66b';ctx.beginPath();ctx.arc(-15,i*7+.5,3,0,Math.PI*2);ctx.fill();ctx.fillStyle='#b47a42';}
       ctx.fillStyle='#3f7938';ctx.beginPath();ctx.moveTo(0,-18);ctx.lineTo(-11,-3);ctx.lineTo(11,-3);ctx.closePath();ctx.fill();
+    }else if(loc.type==='stoneQuarry'){
+      ctx.fillStyle='#8f8e8a';ctx.beginPath();ctx.moveTo(-13,9);ctx.lineTo(-7,-10);ctx.lineTo(1,-4);ctx.lineTo(7,-13);ctx.lineTo(14,8);ctx.closePath();ctx.fill();
+      ctx.strokeStyle='#d9d6cf';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(-8,-2);ctx.lineTo(10,4);ctx.moveTo(-1,-9);ctx.lineTo(5,8);ctx.stroke();
     }else{
       ctx.fillStyle='#ad9a78';ctx.fillRect(-8,-11,16,21);ctx.fillStyle='#6d5941';ctx.fillRect(-12,-15,24,7);ctx.fillStyle='#d8c690';ctx.fillRect(-3,-6,6,9);
       ctx.strokeStyle='#9bc9e8';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,-3,17,-.55,.55);ctx.stroke();
@@ -25191,7 +25283,6 @@ console.info('Dorfkrieg v19.5.8 Living World aktiv.',M.validate());
 
   setTimeout(ensureLocations,0);
   globalThis.DorfkriegLivingWorldV192=()=>({version:'19.2',count:active().length,byType:Object.fromEntries(Object.keys(TYPES).map(k=>[k,active().filter(x=>x.type===k).length])),objects:active().map(x=>({...x,meta:{...x.meta}}))});
-  console.info('Dorfkrieg v19.5.8: Living-World-Kartenobjekte aktiv.');
 })();
 </script>
 
@@ -25831,13 +25922,11 @@ if(typeof oldReset==='function')globalThis.resetGame=function(){missions.length=
 
 window.DorfkriegSpecialRoads=()=>({version:VERSION,roads:[...specialRoads.values()].map(r=>({locationId:r.locationId,anchorId:r.anchorId,length:+r.totalLength.toFixed(1)})),missions:missions.map(m=>({type:m.type,faction:m.faction,locationId:m.locationId,progress:+m.progress.toFixed(2)}))});
 setTimeout(ensureRoads,0);
-console.info('Dorfkrieg v19.5.8: Sonderorte vollständig an organische Zufahrtsstraßen und Expeditionen angebunden.');
 })();
 </script>
 
 <script>
 /* v19.5.8 – Stabilisierung der Sonderort-Routen. */
-console.info('Dorfkrieg v19.5.8: Routenereignisse zentralisiert, Feldwege optimiert und Expeditionsfehler abgesichert.');
 </script>
 
 
@@ -25854,7 +25943,7 @@ const M=globalThis.DorfkriegModules;
 const api=M?.get?.('SpecialLocations');
 if(!api)return;
 const entries=()=>{const list=typeof api.entries==='function'?api.entries():api.all?.();return Array.isArray(list)?list:[];};
-const icon=type=>type==='goldMine'?'⛏️':type==='woodCamp'?'🌲':'👁️';
+const icon=type=>type==='goldMine'?'⛏️':type==='woodCamp'?'🌲':type==='stoneQuarry'?'🪨':'👁️';
 const ownerLabel=owner=>owner===FACTIONS.NEUTRAL?'Neutral':owner===FACTIONS.PLAYER?'Eigen':'KI';
 const ownerDot=owner=>owner===FACTIONS.NEUTRAL?'⚪':owner===FACTIONS.PLAYER?'●':'●';
 const ownerColor=owner=>owner===FACTIONS.NEUTRAL?'#d7cfb8':(typeof factionPrimaryColor==='function'?factionPrimaryColor(owner):(owner===FACTIONS.PLAYER?'#4aa3ff':'#e35d5d'));
@@ -25938,7 +26027,6 @@ globalThis.DorfkriegClearSpecialRouteSelection=function(){
  if(pendingRouteEditor)pendingRouteEditor.specialTargets=[];
  if(typeof originalClear==='function')originalClear();
 };
-console.info('Dorfkrieg v19.5.8: Sonderorte als Mehrfachziele in die normale Routenauswahl integriert.');
 })();
 </script>
 
@@ -25974,7 +26062,6 @@ window.DorfkriegLivingWorldStability=function(){
  const selected=pendingRouteEditor?.specialTargets?.slice?.()||[];
  return{version:'19.5.4',locations:entries().length,selectedSpecialTargets:selected,missions:roadState.missions||[],routeEditorOpen:!!pendingRouteEditor};
 };
-console.info('Dorfkrieg v19.5.8: Living-World-Routen stabilisiert.',window.DorfkriegLivingWorldStability());
 })();
 </script>
 
@@ -26021,7 +26108,6 @@ canvas.addEventListener('click',function(event){
 canvas.addEventListener('contextmenu',function(event){
  if(pendingRouteEditor&&specialAtEvent(event)){event.preventDefault();event.stopImmediatePropagation();}
 },true);
-console.info('Dorfkrieg v19.5.8: Sonderort-Infofenster und Routenauswahl sauber getrennt.');
 })();
 </script>
 
@@ -26071,7 +26157,6 @@ if(typeof previousCancel==='function')globalThis.cancelRouteEditing=function(){
   return result;
 };
 
-console.info('Dorfkrieg v19.5.8: Dorf- und Sonderortziele vereinheitlicht; Karteninfos im Routenmodus gesperrt.');
 })();
 </script>
 

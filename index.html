@@ -494,6 +494,27 @@
       pointer-events: none;
     }
 
+    .active-map-seed-badge {
+      position: absolute;
+      z-index: 19;
+      left: 50%;
+      top: 82px;
+      transform: translateX(-50%);
+      max-width: min(82vw, 560px);
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(39,31,22,.92), rgba(18,14,10,.88));
+      border: 1px solid rgba(224,188,112,.24);
+      color: #d9c79f;
+      font-size: .58rem;
+      font-weight: 800;
+      letter-spacing: .04em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+    }
+
 
     .intro-screen {
       position: absolute;
@@ -1016,6 +1037,42 @@
       min-height: 40px;
     }
 
+    .start-field input {
+      width: 100%;
+      min-height: 40px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,.16);
+      background: linear-gradient(180deg, #5b4630, #3f311f);
+      color: #f6e7c5;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+    }
+
+    .start-inline-controls {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) auto auto;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .start-inline-btn {
+      min-height: 40px;
+      padding: 0 10px;
+      font-size: .72rem;
+      font-weight: 900;
+      letter-spacing: .02em;
+      background: linear-gradient(180deg,#6a5334,#443320);
+      border-color: rgba(255,224,159,.28);
+      white-space: nowrap;
+    }
+
+    .start-note {
+      margin-top: 7px;
+      color: #cdbb98;
+      font-size: .67rem;
+      line-height: 1.35;
+    }
+
     .faction-preview {
       margin-top: 10px;
       min-height: 92px;
@@ -1132,6 +1189,14 @@
       .start-castle {
         transform: translateX(-50%) scale(.78);
         transform-origin: top center;
+      }
+
+      .start-inline-controls {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .start-inline-controls input {
+        grid-column: 1 / -1;
       }
     }
 
@@ -1449,6 +1514,12 @@
 
     .remastered-badge {
       top: 6px !important;
+    }
+
+    .active-map-seed-badge {
+      top: 24px !important;
+      transform: translateX(-50%) scale(.72);
+      transform-origin: top center;
     }
 
     .season-box {
@@ -4343,6 +4414,21 @@ body.game-started .in-game-guide-btn { display: flex; }
           </div>
 
           <div class="start-field">
+            <label for="mapPresetSelect">Kartentyp</label>
+            <select id="mapPresetSelect"></select>
+          </div>
+
+          <div class="start-field">
+            <label for="mapSeedInput">Karten-Seed</label>
+            <div class="start-inline-controls">
+              <input id="mapSeedInput" type="text" maxlength="120" placeholder="leer = automatisch" autocomplete="off" spellcheck="false" />
+              <button id="mapSeedRandomBtn" class="start-inline-btn" type="button">Zufällig</button>
+              <button id="mapSeedCopyBtn" class="start-inline-btn" type="button">Kopieren</button>
+            </div>
+            <div class="start-note">Gleicher Seed und gleiche Einstellungen erzeugen dieselbe Karte.</div>
+          </div>
+
+          <div class="start-field">
             <label for="fogSelect">Schatten des Krieges</label>
             <select id="fogSelect">
               <option value="on" selected>Aktiv</option>
@@ -4576,6 +4662,7 @@ body.game-started .in-game-guide-btn { display: flex; }
 
     <div class="season-box" id="seasonText">Frühling · 90 s</div>
     <div id="inGameVersionBadge" class="remastered-badge">DORFKRIEG REMASTERED · v20.0</div>
+    <div id="activeMapSeedBadge" class="active-map-seed-badge">Standard · Seed: —</div>
 
     <div id="debugPanel" class="debug-panel" aria-hidden="true">
       <h3>Entwickleransicht (F9)</h3>
@@ -5657,10 +5744,15 @@ const startDifficultySelect=document.getElementById("startDifficultySelect");
 const startSpeedSelect=document.getElementById("startSpeedSelect");
 const fogSelect=document.getElementById("fogSelect");
 const mapSizeSelect=document.getElementById("mapSizeSelect");
+const mapPresetSelect=document.getElementById("mapPresetSelect");
+const mapSeedInput=document.getElementById("mapSeedInput");
+const mapSeedRandomBtn=document.getElementById("mapSeedRandomBtn");
+const mapSeedCopyBtn=document.getElementById("mapSeedCopyBtn");
 const mapSizePreview=document.getElementById("mapSizePreview");
 const mapPreviewDiagram=document.getElementById("mapPreviewDiagram");
 const mapPreviewTitle=document.getElementById("mapPreviewTitle");
 const mapPreviewDetails=document.getElementById("mapPreviewDetails");
+const activeMapSeedBadge=document.getElementById("activeMapSeedBadge");
 const playerFactionPreview=document.getElementById("playerFactionPreview");
 const aiFactionPreview=document.getElementById("aiFactionPreview");
 const randomPlayerFactionBtn=document.getElementById("randomPlayerFactionBtn");
@@ -6022,7 +6114,19 @@ const MAP_CONFIGS = {
     minZoom:.82,
     startZoom:1.02,
     playtime:"10–15 Minuten",
-    description:"Kurze Wege und früher Konflikt"
+    description:"Kurze Wege und früher Konflikt",
+    generator:{
+      settlementJitter:.16,
+      connectionVariation:.22,
+      extraConnectionChance:.26,
+      biomeRegionCount:3,
+      biomeRoughness:.24,
+      riverAmplitude:.92,
+      riverFrequency:.94,
+      lakeAmount:1,
+      natureDensity:.94,
+      reliefDensity:.92
+    }
   },
   medium:{
     name:"Mittel",
@@ -6033,7 +6137,19 @@ const MAP_CONFIGS = {
     minZoom:.58,
     startZoom:.82,
     playtime:"20–30 Minuten",
-    description:"Ausgewogene Karte mit mehreren Fronten"
+    description:"Ausgewogene Karte mit mehreren Fronten",
+    generator:{
+      settlementJitter:.21,
+      connectionVariation:.30,
+      extraConnectionChance:.31,
+      biomeRegionCount:4,
+      biomeRoughness:.30,
+      riverAmplitude:1.00,
+      riverFrequency:1.00,
+      lakeAmount:2,
+      natureDensity:1.00,
+      reliefDensity:1.00
+    }
   },
   large:{
     name:"Groß",
@@ -6044,7 +6160,19 @@ const MAP_CONFIGS = {
     minZoom:.40,
     startZoom:.62,
     playtime:"35–50 Minuten",
-    description:"Viele Umgehungswege und lange Frontlinien"
+    description:"Viele Umgehungswege und lange Frontlinien",
+    generator:{
+      settlementJitter:.25,
+      connectionVariation:.36,
+      extraConnectionChance:.36,
+      biomeRegionCount:5,
+      biomeRoughness:.36,
+      riverAmplitude:1.08,
+      riverFrequency:1.04,
+      lakeAmount:3,
+      natureDensity:1.08,
+      reliefDensity:1.08
+    }
   },
   huge:{
     name:"Riesig",
@@ -6055,9 +6183,282 @@ const MAP_CONFIGS = {
     minZoom:.30,
     startZoom:.48,
     playtime:"60+ Minuten",
-    description:"Mehrere Regionen und großräumige Feldzüge"
+    description:"Mehrere Regionen und großräumige Feldzüge",
+    generator:{
+      settlementJitter:.28,
+      connectionVariation:.42,
+      extraConnectionChance:.40,
+      biomeRegionCount:6,
+      biomeRoughness:.42,
+      riverAmplitude:1.14,
+      riverFrequency:1.08,
+      lakeAmount:4,
+      natureDensity:1.14,
+      reliefDensity:1.12
+    }
   }
 };
+
+const MAP_GENERATION_PRESETS={
+  standard:{
+    id:"standard",
+    name:"Standard",
+    description:"Ausgewogene Karte für stabile Partien.",
+    overrides:{}
+  },
+  forest:{
+    id:"forest",
+    name:"Waldreich",
+    description:"Dichtere Natur und ausgeprägter Waldcharakter.",
+    overrides:{
+      natureDensity:1.22,
+      biomeRegionCount:5,
+      biomeRoughness:.38,
+      reliefDensity:.96,
+      extraConnectionChance:.28
+    }
+  },
+  mountains:{
+    id:"mountains",
+    name:"Gebirge",
+    description:"Mehr Relief und variablere Übergänge.",
+    overrides:{
+      reliefDensity:1.26,
+      connectionVariation:.44,
+      extraConnectionChance:.27,
+      biomeRoughness:.40,
+      riverAmplitude:.92,
+      natureDensity:.94
+    }
+  },
+  lakes:{
+    id:"lakes",
+    name:"Seenland",
+    description:"Mehr Seen und lebhafte Flussverläufe.",
+    overrides:{
+      lakeAmount:5,
+      riverAmplitude:1.14,
+      riverFrequency:1.12,
+      biomeRoughness:.36,
+      reliefDensity:.94
+    }
+  },
+  plains:{
+    id:"plains",
+    name:"Offene Ebene",
+    description:"Offenere Räume, weniger Relief und schnellere Frontbildung.",
+    overrides:{
+      reliefDensity:.76,
+      natureDensity:.84,
+      extraConnectionChance:.43,
+      connectionVariation:.27,
+      settlementJitter:.24,
+      biomeRegionCount:4
+    }
+  },
+  rich:{
+    id:"rich",
+    name:"Rohstoffreich",
+    description:"Mehr Rohstoffzugang und leicht erhöhte Sonderortdichte.",
+    overrides:{
+      resourceRichness:1.26,
+      specialLocationDensity:1.20,
+      natureDensity:1.06,
+      biomeRegionCount:5,
+      extraConnectionChance:.34
+    }
+  }
+};
+
+const DEFAULT_MAP_GENERATOR_PARAMS={
+  settlementJitter:.20,
+  connectionVariation:.30,
+  extraConnectionChance:.30,
+  biomeRegionCount:4,
+  biomeRoughness:.30,
+  riverAmplitude:1.00,
+  riverFrequency:1.00,
+  lakeAmount:2,
+  natureDensity:1.00,
+  reliefDensity:1.00,
+  resourceRichness:1.00,
+  specialLocationDensity:1.00
+};
+
+const MAP_GENERATOR_VERSION="20.2.0-presets";
+
+const MAP_GENERATION_MAX_ATTEMPTS=4;
+
+let mapSeed=0;
+let mapGenerationSalt=0;
+let runtimeMapGenerationConfig=null;
+
+function normalizeMapSeed(value){
+  const number=Number(value);
+
+  if(Number.isFinite(number)){
+    const normalized=(Math.floor(Math.abs(number))>>>0);
+    return normalized||1;
+  }
+
+  const text=String(value??"");
+  let hash=2166136261;
+
+  for(let index=0;index<text.length;index++){
+    hash^=text.charCodeAt(index);
+    hash=Math.imul(hash,16777619);
+  }
+
+  return (hash>>>0)||1;
+}
+
+function hashText(text){
+  let hash=2166136261;
+  const input=String(text??"");
+
+  for(let index=0;index<input.length;index++){
+    hash^=input.charCodeAt(index);
+    hash=Math.imul(hash,16777619);
+  }
+
+  return hash>>>0;
+}
+
+function createAutoMapSeed(sizeKey){
+  const now=Date.now()>>>0;
+  const perf=Math.floor((performance.now?.()||0)*1000)>>>0;
+  const sizeHash=hashText(sizeKey||selectedMapSize||"medium");
+
+  return normalizeMapSeed(
+    now^
+    Math.imul(perf,2654435761)^
+    Math.imul(sizeHash,1597334677)
+  );
+}
+
+function getMapPresetById(presetId){
+  return MAP_GENERATION_PRESETS[presetId]||MAP_GENERATION_PRESETS.standard;
+}
+
+function getEffectiveMapGenerationConfig(mapSize,presetId){
+  const sizeKey=mapSize in MAP_CONFIGS?mapSize:"medium";
+  const sizeConfig=MAP_CONFIGS[sizeKey]||MAP_CONFIGS.medium;
+  const preset=getMapPresetById(presetId);
+  const generator=Object.assign(
+    {},
+    DEFAULT_MAP_GENERATOR_PARAMS,
+    sizeConfig.generator||{},
+    preset.overrides||{}
+  );
+
+  return {
+    sizeKey,
+    presetId:preset.id,
+    presetName:preset.name,
+    presetDescription:preset.description,
+    generator,
+    generatorVersion:MAP_GENERATOR_VERSION
+  };
+}
+
+function setRuntimeMapGenerationConfig(config){
+  if(!config||typeof config!=="object"){
+    runtimeMapGenerationConfig=null;
+    return;
+  }
+
+  runtimeMapGenerationConfig={
+    sizeKey:config.sizeKey,
+    presetId:config.presetId,
+    presetName:config.presetName,
+    presetDescription:config.presetDescription,
+    generatorVersion:config.generatorVersion||MAP_GENERATOR_VERSION,
+    generator:Object.assign({},config.generator||{})
+  };
+}
+
+function getRuntimeMapGenerationConfig(){
+  if(!runtimeMapGenerationConfig)return null;
+
+  return {
+    sizeKey:runtimeMapGenerationConfig.sizeKey,
+    presetId:runtimeMapGenerationConfig.presetId,
+    presetName:runtimeMapGenerationConfig.presetName,
+    presetDescription:runtimeMapGenerationConfig.presetDescription,
+    generatorVersion:runtimeMapGenerationConfig.generatorVersion,
+    generator:Object.assign({},runtimeMapGenerationConfig.generator||{})
+  };
+}
+
+function mapGeneratorParamsFor(config){
+  const runtimeConfig=getRuntimeMapGenerationConfig();
+  const runtimeGenerator=
+    runtimeConfig&&runtimeConfig.sizeKey===selectedMapSize
+      ? runtimeConfig.generator
+      : null;
+
+  return Object.assign(
+    {},
+    DEFAULT_MAP_GENERATOR_PARAMS,
+    config?.generator||{},
+    runtimeGenerator||{}
+  );
+}
+
+function setupMapGenerationSeed(seed,sizeKey,attempt){
+  mapSeed=normalizeMapSeed(seed);
+  const sizeHash=hashText(sizeKey||selectedMapSize||"medium");
+  const presetHash=hashText(selectedMapPresetId||"standard");
+
+  mapGenerationSalt=normalizeMapSeed(
+    mapSeed^
+    Math.imul(sizeHash,1103515245)^
+    Math.imul(presetHash,2246822519)^
+    Math.imul((attempt+1)>>>0,1597334677)
+  );
+}
+
+function generatorRandom(seed,channel=0){
+  const mixed=
+    mapGenerationSalt+
+    Math.imul((seed>>>0)+1,374761393)+
+    Math.imul((channel>>>0)+1,668265263);
+
+  const value=Math.sin(mixed*.00000061+17.31)*43758.5453123;
+  return value-Math.floor(value);
+}
+
+function generatorChoice(seed,count,channel=0){
+  if(!count||count<=1)return 0;
+  return Math.min(count-1,Math.floor(generatorRandom(seed,channel)*count));
+}
+
+function villageIdSeed(id){
+  return hashText(String(id||""));
+}
+
+function activeMapGeneratorMeta(){
+  const runtimeConfig=getRuntimeMapGenerationConfig();
+
+  return {
+    seed:mapSeed,
+    salt:mapGenerationSalt,
+    size:selectedMapSize,
+    presetId:selectedMapPresetId,
+    generatorVersion:
+      runtimeConfig?.generatorVersion||
+      MAP_GENERATOR_VERSION
+  };
+}
+
+window.getCurrentMapSeed=function(){
+  return mapSeed;
+};
+
+window.getMapGeneratorMeta=activeMapGeneratorMeta;
+window.getMapGenerationPresets=()=>MAP_GENERATION_PRESETS;
+window.getEffectiveMapGenerationConfig=getEffectiveMapGenerationConfig;
+window.getRuntimeMapGenerationConfig=getRuntimeMapGenerationConfig;
 
 
 const BIOME_TYPES = {
@@ -6150,25 +6551,30 @@ const BIOME_TYPES = {
 let BIOME_REGIONS=[];
 
 function biomeSeed(seed){
-  const value=Math.sin(seed*91.17+17.31)*43758.5453;
-  return value-Math.floor(value);
+  return generatorRandom(seed,31);
 }
 
 function biomeCountForMap(){
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+
   return {
     small:3,
     medium:4,
     large:5,
     huge:6
-  }[selectedMapSize]||4;
+  }[selectedMapSize]||Math.max(3,Math.round(params.biomeRegionCount));
 }
 
 function generateBiomeRegions(){
   BIOME_REGIONS.length=0;
 
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
   const count=biomeCountForMap();
+  const roughness=Math.max(.12,Math.min(.62,params.biomeRoughness||.30));
   const types=["grassland","forest","mountain","swamp","hills","water"];
-  const maxRadius=Math.max(worldWidth,worldHeight)*.24;
+  const maxRadius=Math.max(worldWidth,worldHeight)*(.21+roughness*.08);
 
   // Basis-Grasland über die ganze Karte.
   BIOME_REGIONS.push({
@@ -6186,15 +6592,39 @@ function generateBiomeRegions(){
     const type=types[(i+1)%types.length];
     const x=worldWidth*(.16+biomeSeed(i*7+3)*.68);
     const y=worldHeight*(.13+biomeSeed(i*11+9)*.74);
-    const rx=maxRadius*(.46+biomeSeed(i*13+4)*.38);
-    const ry=maxRadius*(.34+biomeSeed(i*17+6)*.34);
-    const rotation=(biomeSeed(i*19+8)-.5)*.8;
+    const rx=maxRadius*(.44+biomeSeed(i*13+4)*(.30+roughness*.26));
+    const ry=maxRadius*(.30+biomeSeed(i*17+6)*(.28+roughness*.22));
+    const rotation=(biomeSeed(i*19+8)-.5)*(.74+roughness*.70);
+    const seed=i+10;
 
     BIOME_REGIONS.push({
       type,x,y,rx,ry,rotation,
-      seed:i+10,
+      seed,
       layer:1
     });
+
+    const spurCount=
+      biomeSeed(seed*97+11)<(.54+roughness*.30)
+        ? 2
+        : 1;
+
+    for(let spur=0;spur<spurCount;spur++){
+      const angle=biomeSeed(seed*131+spur*37)*Math.PI*2;
+      const distance=(.48+biomeSeed(seed*149+spur*19)*.34)*Math.max(rx,ry);
+      const sx=x+Math.cos(angle)*distance;
+      const sy=y+Math.sin(angle)*distance;
+
+      BIOME_REGIONS.push({
+        type,
+        x:Math.max(24,Math.min(worldWidth-24,sx)),
+        y:Math.max(24,Math.min(worldHeight-24,sy)),
+        rx:Math.max(34,rx*(.24+biomeSeed(seed*173+spur*13)*(.30+roughness*.26))),
+        ry:Math.max(28,ry*(.22+biomeSeed(seed*197+spur*17)*(.26+roughness*.26))),
+        rotation:rotation+(biomeSeed(seed*211+spur*23)-.5)*.95,
+        seed:seed*10+spur,
+        layer:1
+      });
+    }
   }
 
   // Spieler- und KI-Startbereich möglichst als Grasland/Hügelland lesbar halten.
@@ -6294,8 +6724,7 @@ const WATER_LAYER = {
 const waterLayerCtx=WATER_LAYER.canvas.getContext("2d");
 
 function waterSeed(seed){
-  const value=Math.sin(seed*41.713+13.917)*43758.5453;
-  return value-Math.floor(value);
+  return generatorRandom(seed,47);
 }
 
 function distanceToSegment(px,py,ax,ay,bx,by){
@@ -6321,9 +6750,34 @@ function waterTooCloseToVillage(x,y,radius){
   );
 }
 
-function createRiverPoints(index,count){
-  const horizontal=index%2===0;
+function waterTooCloseToRoad(x,y,radius,edgeFilter=null){
+  for(const[aId,bId]of roads){
+    if(edgeFilter&&!edgeFilter(aId,bId))continue;
+
+    const a=villageTemplate.find(v=>v.id===aId);
+    const b=villageTemplate.find(v=>v.id===bId);
+    if(!a||!b)continue;
+
+    if(distanceToSegment(x,y,a.x,a.y,b.x,b.y)<radius){
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function createRiverPoints(index,count,orientation){
+  const horizontal=orientation==="horizontal";
   const points=[];
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+  const amplitudeFactor=Math.max(.70,Math.min(1.32,params.riverAmplitude||1));
+  const frequencyFactor=Math.max(.72,Math.min(1.28,params.riverFrequency||1));
+  const riverSeed=index*173+count*47+11;
+  const majorFrequency=(1.84+waterSeed(riverSeed+5)*1.05)*frequencyFactor;
+  const minorFrequency=(4.05+waterSeed(riverSeed+9)*1.95)*frequencyFactor;
+  const phaseA=waterSeed(riverSeed+13)*Math.PI*2;
+  const phaseB=waterSeed(riverSeed+17)*Math.PI*2;
   const segments=
     selectedMapSize==="huge" ? 18 :
     selectedMapSize==="large" ? 15 :
@@ -6332,7 +6786,9 @@ function createRiverPoints(index,count){
   if(horizontal){
     const baseY=
       worldHeight*
-      (.22+index*(.56/Math.max(1,count-1)));
+      (.20+index*(.60/Math.max(1,count-1)));
+    const majorAmp=worldHeight*(.020+waterSeed(riverSeed+21)*.020)*amplitudeFactor;
+    const minorAmp=worldHeight*(.006+waterSeed(riverSeed+25)*.010)*amplitudeFactor;
 
     for(let step=0;step<segments;step++){
       const t=step/(segments-1);
@@ -6341,14 +6797,16 @@ function createRiverPoints(index,count){
         x:-100+t*(worldWidth+200),
         y:
           baseY+
-          Math.sin(t*Math.PI*2.15+index*.82)*worldHeight*.027+
-          Math.sin(t*Math.PI*5.3+index*.37)*worldHeight*.009
+          Math.sin(t*Math.PI*majorFrequency+phaseA)*majorAmp+
+          Math.sin(t*Math.PI*minorFrequency+phaseB)*minorAmp
       });
     }
   }else{
     const baseX=
       worldWidth*
-      (.28+index*(.44/Math.max(1,count-1)));
+      (.24+index*(.52/Math.max(1,count-1)));
+    const majorAmp=worldWidth*(.022+waterSeed(riverSeed+29)*.022)*amplitudeFactor;
+    const minorAmp=worldWidth*(.008+waterSeed(riverSeed+33)*.010)*amplitudeFactor;
 
     for(let step=0;step<segments;step++){
       const t=step/(segments-1);
@@ -6356,8 +6814,8 @@ function createRiverPoints(index,count){
       points.push({
         x:
           baseX+
-          Math.sin(t*Math.PI*2.05+index*.74)*worldWidth*.034+
-          Math.sin(t*Math.PI*4.9+index*.43)*worldWidth*.010,
+          Math.sin(t*Math.PI*majorFrequency+phaseA)*majorAmp+
+          Math.sin(t*Math.PI*minorFrequency+phaseB)*minorAmp,
         y:-100+t*(worldHeight+200)
       });
     }
@@ -6371,6 +6829,9 @@ function generateWaterLayer(){
   WATER_LAYER.lakes.length=0;
   WATER_LAYER.ready=false;
 
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+
   const riverCount={
     small:1,
     medium:2,
@@ -6378,35 +6839,69 @@ function generateWaterLayer(){
     huge:4
   }[selectedMapSize]||2;
 
+  const orientations=[];
+
   for(let index=0;index<riverCount;index++){
+    const forceOrientation=
+      index===0
+        ? "horizontal"
+        : index===riverCount-1&&riverCount>1
+          ? "vertical"
+          : null;
+
+    const orientation=
+      forceOrientation||
+      (waterSeed(index*83+7)<.5?"horizontal":"vertical");
+    orientations.push(orientation);
+  }
+
+  for(let index=0;index<riverCount;index++){
+    const widthClass=generatorChoice(index*59+riverCount*13,3,1);
+
     WATER_LAYER.rivers.push({
-      points:createRiverPoints(index,riverCount),
-      width:index%3===0?30:20
+      points:createRiverPoints(index,riverCount,orientations[index]),
+      width:widthClass===0?20:widthClass===1?24:30
     });
   }
 
-  const lakeTarget={
+  const baseLakeTarget={
     small:1,
     medium:2,
     large:3,
     huge:4
   }[selectedMapSize]||2;
+  const lakeTarget=Math.max(
+    1,
+    Math.min(
+      baseLakeTarget+2,
+      Math.round((params.lakeAmount||baseLakeTarget))
+    )
+  );
 
   let attempts=0;
 
   while(
     WATER_LAYER.lakes.length<lakeTarget &&
-    attempts<lakeTarget*12
+    attempts<lakeTarget*20
   ){
     const seed=WATER_LAYER.lakes.length*17+attempts*11+3;
     const x=worldWidth*(.12+waterSeed(seed)*.76);
     const y=worldHeight*(.12+waterSeed(seed+5)*.76);
-    const rx=44+waterSeed(seed+9)*40;
-    const ry=25+waterSeed(seed+13)*28;
+    const rx=36+waterSeed(seed+9)*56;
+    const ry=22+waterSeed(seed+13)*38;
 
     attempts++;
 
     if(waterTooCloseToVillage(x,y,Math.max(rx,ry)+74))continue;
+    if(
+      waterTooCloseToRoad(
+        x,
+        y,
+        Math.max(rx,ry)+22,
+        (aId,bId)=>
+          aId==="P0"||bId==="P0"||aId==="A0"||bId==="A0"
+      )
+    )continue;
 
     WATER_LAYER.lakes.push({
       x,
@@ -6854,8 +7349,7 @@ const NATURE_LAYER = {
 const natureLayerCtx=NATURE_LAYER.canvas.getContext("2d");
 
 function natureSeed(seed){
-  const value=Math.sin(seed*53.17+21.91)*43758.5453;
-  return value-Math.floor(value);
+  return generatorRandom(seed,59);
 }
 
 function natureObjectNearVillage(x,y,radius){
@@ -6921,13 +7415,16 @@ function generateNatureLayer(){
   NATURE_LAYER.objects.length=0;
   NATURE_LAYER.ready=false;
 
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+
   const areaFactor=Math.max(1,(worldWidth*worldHeight)/(900*1540));
   const targetCount=Math.round(
     (
       selectedMapSize==="small" ? 120 :
       selectedMapSize==="medium" ? 210 :
       selectedMapSize==="large" ? 340 : 480
-    )*Math.min(1.25,areaFactor)
+    )*Math.min(1.25,areaFactor)*Math.max(.74,Math.min(1.34,params.natureDensity||1))
   );
 
   let attempts=0;
@@ -6950,6 +7447,13 @@ function generateNatureLayer(){
     const rotation=(natureSeed(seed+9)-.5)*.9;
     const scale=.58+natureSeed(seed+13)*.62;
     const choice=natureSeed(seed+21);
+    const densityGate=natureSeed(seed+27);
+
+    if(
+      (biome==="forest"&&densityGate>.95)||
+      (biome==="mountain"&&densityGate>.93)||
+      ((biome==="grassland"||biome==="hills")&&densityGate>.82)
+    )continue;
 
     if(nearWater){
       if(choice<.42){
@@ -7384,20 +7888,22 @@ const RELIEF_LAYER = {
 const reliefLayerCtx=RELIEF_LAYER.canvas.getContext("2d");
 
 function reliefSeed(seed){
-  const value=Math.sin(seed*67.913+29.117)*43758.5453;
-  return value-Math.floor(value);
+  return generatorRandom(seed,67);
 }
 
 function generateReliefLayer(){
   RELIEF_LAYER.features.length=0;
   RELIEF_LAYER.ready=false;
 
-  const featureTarget={
+  const config=MAP_CONFIGS[selectedMapSize]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+
+  const featureTarget=Math.max(8,Math.round(({
     small:12,
     medium:20,
     large:30,
     huge:42
-  }[selectedMapSize]||15;
+  }[selectedMapSize]||15)*(Math.max(.75,Math.min(1.35,params.reliefDensity||1)))));
 
   let attempts=0;
 
@@ -7813,6 +8319,8 @@ const VILLAGE_NAMES = [
 ];
 
 let selectedMapSize="medium";
+let selectedMapPresetId="standard";
+let selectedMapSeedInput="";
 let villageTemplate=[];
 let roads=[];
 let worldWidth=MAP_CONFIGS.medium.width;
@@ -7820,46 +8328,138 @@ let worldHeight=MAP_CONFIGS.medium.height;
 let generatedResourceMap=new Map();
 
 function seededValue(seed){
-  const value=Math.sin(seed*12.9898+78.233)*43758.5453;
-  return value-Math.floor(value);
+  return generatorRandom(seed,79);
 }
 
-function layerPositions(count,width,layerIndex,totalLayers){
-  if(count===1)return [width/2];
+function layerPositions(count,width,layerIndex,totalLayers,layerStep,params,fallback=false){
+  if(count===1){
+    const yOffset=
+      layerIndex>0&&layerIndex<totalLayers-1
+        ? (seededValue(layerIndex*53+11)-.5)*Math.min(26,layerStep*.12)
+        : 0;
+
+    return [{x:width/2,yOffset}];
+  }
 
   const margin=Math.max(90,width*.09);
   const usable=width-margin*2;
-  const step=usable/(count-1);
+  const step=usable/Math.max(1,count-1);
+  const settlementJitter=Math.max(.02,Math.min(.36,params?.settlementJitter||.20));
   const positions=[];
+  const minSpacing=Math.max(52,Math.min(125,step*(.74-settlementJitter*.18)));
+
+  const weights=[];
+  for(let index=0;index<count-1;index++){
+    const variability=fallback?0:settlementJitter;
+    const base=1+(seededValue(layerIndex*41+index*17)-.5)*variability*1.35;
+    weights.push(Math.max(.45,base));
+  }
+  const weightSum=weights.reduce((sum,value)=>sum+value,0)||1;
+
+  let cursor=margin;
 
   for(let index=0;index<count;index++){
-    let x=margin+index*step;
+    if(index>0){
+      const segment=(weights[index-1]/weightSum)*usable;
+      cursor+=segment;
+    }
 
-    // Kleine deterministische Abweichung, ohne die Symmetrie zu zerstören.
-    if(layerIndex>0&&layerIndex<totalLayers-1){
-      const jitter=(seededValue(layerIndex*31+index*17)-.5)*Math.min(34,step*.16);
+    let x=cursor;
+
+    if(layerIndex>0&&layerIndex<totalLayers-1&&!fallback){
+      const jitter=(seededValue(layerIndex*31+index*17)-.5)*Math.min(58,step*(.22+settlementJitter*.52));
       x+=jitter;
     }
 
-    positions.push(x);
+    const yOffset=
+      layerIndex>0&&layerIndex<totalLayers-1&&!fallback
+        ? (seededValue(layerIndex*59+index*23)-.5)*Math.min(34,layerStep*(.08+settlementJitter*.24))
+        : 0;
+
+    positions.push({
+      x:Math.max(margin,Math.min(width-margin,x)),
+      yOffset
+    });
+  }
+
+  positions.sort((a,b)=>a.x-b.x);
+
+  for(let index=1;index<positions.length;index++){
+    const left=positions[index-1];
+    const current=positions[index];
+    const gap=current.x-left.x;
+
+    if(gap<minSpacing){
+      current.x=Math.min(width-margin,left.x+minSpacing);
+    }
+  }
+
+  for(let index=positions.length-2;index>=0;index--){
+    const right=positions[index+1];
+    const current=positions[index];
+    const gap=right.x-current.x;
+
+    if(gap<minSpacing){
+      current.x=Math.max(margin,right.x-minSpacing);
+    }
+  }
+
+  for(const position of positions){
+    position.x=Math.max(margin,Math.min(width-margin,position.x));
   }
 
   return positions;
 }
 
-function connectAdjacentLayers(layerA,layerB,result){
+function candidateConnectionTargets(origin,layer,limit=4){
+  return [...layer]
+    .map(target=>({
+      target,
+      score:
+        Math.abs(target.x-origin.x)+
+        Math.abs((target.y||0)-(origin.y||0))*.25
+    }))
+    .sort((a,b)=>a.score-b.score)
+    .slice(0,Math.max(1,limit))
+    .map(entry=>entry.target);
+}
+
+function pickSeededTarget(origin,candidates,seedOffset=0){
+  if(!candidates.length)return null;
+  if(candidates.length===1)return candidates[0];
+
+  const seed=villageIdSeed(origin.id)+seedOffset;
+  const band=Math.min(candidates.length,1+generatorChoice(seed,Math.min(3,candidates.length),5));
+  const choice=generatorChoice(seed+11,band,7);
+  return candidates[choice];
+}
+
+function connectAdjacentLayers(layerA,layerB,result,params,fallback=false){
+  const variation=Math.max(.04,Math.min(.70,params?.connectionVariation||.30));
+  const extraChance=Math.max(.04,Math.min(.70,params?.extraConnectionChance||.30));
+
   for(const village of layerA){
-    const sorted=[...layerB].sort(
-      (a,b)=>Math.abs(a.x-village.x)-Math.abs(b.x-village.x)
+    const nearest=candidateConnectionTargets(
+      village,
+      layerB,
+      fallback?2:Math.max(3,2+Math.round(layerB.length*variation*.65))
     );
+    const firstTarget=pickSeededTarget(village,nearest,17) || nearest[0];
 
-    const connectionCount=
-      layerB.length===1 ? 1 :
-      Math.abs(layerA.length-layerB.length)>=2 ? 2 :
-      2;
+    if(firstTarget){
+      result.set(roadKey(village.id,firstTarget.id),[village.id,firstTarget.id]);
+    }
 
-    for(const target of sorted.slice(0,connectionCount)){
-      result.set(roadKey(village.id,target.id),[village.id,target.id]);
+    const wantExtra=
+      !fallback&&
+      nearest.length>1&&
+      generatorRandom(villageIdSeed(village.id),13)<(.16+extraChance*.52);
+
+    if(wantExtra){
+      const secondTarget=pickSeededTarget(village,nearest.slice(1),31);
+      if(secondTarget){
+        result.set(roadKey(village.id,secondTarget.id),[village.id,secondTarget.id]);
+      }
     }
   }
 
@@ -7870,17 +8470,157 @@ function connectAdjacentLayers(layerA,layerB,result){
     );
 
     if(!hasConnection){
-      const nearest=[...layerA].sort(
-        (a,b)=>Math.abs(a.x-village.x)-Math.abs(b.x-village.x)
-      )[0];
+      const nearest=candidateConnectionTargets(village,layerA,3)[0];
+      if(nearest){
+        result.set(roadKey(nearest.id,village.id),[nearest.id,village.id]);
+      }
+    }
+  }
 
-      result.set(roadKey(nearest.id,village.id),[nearest.id,village.id]);
+  // Zusätzliche Querverbindungen moderat und seed-gesteuert ergänzen.
+  if(!fallback){
+    const sourceLayer=generatorRandom(layerA.length*73+layerB.length*19,3)<.5?layerA:layerB;
+    const targetLayer=sourceLayer===layerA?layerB:layerA;
+
+    for(const village of sourceLayer){
+      if(generatorRandom(villageIdSeed(village.id),19)>extraChance)continue;
+
+      const nearby=candidateConnectionTargets(village,targetLayer,4);
+      const target=pickSeededTarget(village,nearby,43);
+      if(!target)continue;
+
+      const length=Math.hypot(target.x-village.x,target.y-village.y);
+      if(length>Math.max(worldWidth*.34,360))continue;
+
+      result.set(roadKey(village.id,target.id),[village.id,target.id]);
+    }
+  }
+}
+
+function graphAdjacency(template,roadEntries){
+  const adjacency=new Map(template.map(village=>[village.id,new Set()]));
+
+  for(const[a,b]of roadEntries){
+    if(!adjacency.has(a)||!adjacency.has(b))continue;
+    adjacency.get(a).add(b);
+    adjacency.get(b).add(a);
+  }
+
+  return adjacency;
+}
+
+function bfsFrom(startId,adjacency){
+  const visited=new Set();
+  const queue=[startId];
+
+  while(queue.length){
+    const current=queue.shift();
+    if(visited.has(current))continue;
+    visited.add(current);
+
+    for(const neighbor of adjacency.get(current)||[]){
+      if(!visited.has(neighbor))queue.push(neighbor);
+    }
+  }
+
+  return visited;
+}
+
+function neutralReachInSteps(startId,adjacency,template,maxSteps=2){
+  const byId=new Map(template.map(v=>[v.id,v]));
+  const queue=[{id:startId,depth:0}];
+  const visited=new Set([startId]);
+  let count=0;
+
+  while(queue.length){
+    const current=queue.shift();
+    if(current.depth>=maxSteps)continue;
+
+    for(const neighbor of adjacency.get(current.id)||[]){
+      if(visited.has(neighbor))continue;
+      visited.add(neighbor);
+
+      const village=byId.get(neighbor);
+      if(village?.owner===FACTIONS.NEUTRAL)count++;
+
+      queue.push({id:neighbor,depth:current.depth+1});
+    }
+  }
+
+  return count;
+}
+
+function validateRoadGraph(template,roadEntries){
+  const ids=new Set(template.map(v=>v.id));
+  if(!ids.has("P0")||!ids.has("A0"))return false;
+
+  const adjacency=graphAdjacency(template,roadEntries);
+  const isolated=template.some(village=>(adjacency.get(village.id)?.size||0)===0);
+  if(isolated)return false;
+
+  const fromPlayer=bfsFrom("P0",adjacency);
+  const fromAi=bfsFrom("A0",adjacency);
+
+  if(fromPlayer.size!==template.length)return false;
+  if(fromAi.size!==template.length)return false;
+
+  const playerEarly=neutralReachInSteps("P0",adjacency,template,2);
+  const aiEarly=neutralReachInSteps("A0",adjacency,template,2);
+
+  if(Math.abs(playerEarly-aiEarly)>2)return false;
+
+  return true;
+}
+
+function ensureFallbackConnectivity(template,roadMap){
+  const byId=new Map(template.map(v=>[v.id,v]));
+  const roadEntries=[...roadMap.values()];
+  const adjacency=graphAdjacency(template,roadEntries);
+
+  for(const village of template){
+    if((adjacency.get(village.id)?.size||0)>0)continue;
+
+    const target=[...template]
+      .filter(candidate=>candidate.id!==village.id)
+      .sort((a,b)=>Math.hypot(a.x-village.x,a.y-village.y)-Math.hypot(b.x-village.x,b.y-village.y))[0];
+
+    if(target){
+      roadMap.set(roadKey(village.id,target.id),[village.id,target.id]);
+      adjacency.get(village.id).add(target.id);
+      adjacency.get(target.id).add(village.id);
+    }
+  }
+
+  const reachable=bfsFrom("P0",adjacency);
+  if(reachable.size===template.length)return;
+
+  const missing=template
+    .map(v=>v.id)
+    .filter(id=>!reachable.has(id));
+
+  for(const id of missing){
+    const village=byId.get(id);
+    if(!village)continue;
+
+    const target=[...reachable]
+      .map(knownId=>byId.get(knownId))
+      .filter(Boolean)
+      .sort((a,b)=>Math.hypot(a.x-village.x,a.y-village.y)-Math.hypot(b.x-village.x,b.y-village.y))[0];
+
+    if(target){
+      roadMap.set(roadKey(village.id,target.id),[village.id,target.id]);
+      reachable.add(village.id);
     }
   }
 }
 
 function assignGeneratedResources(template){
   generatedResourceMap=new Map();
+  const params=mapGeneratorParamsFor(
+    MAP_CONFIGS[selectedMapSize]||
+    MAP_CONFIGS.medium
+  );
+  const richness=Math.max(.85,Math.min(1.45,params.resourceRichness||1));
 
   const neutral=template.filter(v=>v.owner===FACTIONS.NEUTRAL);
   const maxLayer=Math.max(...template.map(v=>v.layer));
@@ -7894,11 +8634,35 @@ function assignGeneratedResources(template){
 
   for(const [layer,list] of byLayer){
     list.sort((a,b)=>a.x-b.x);
+
+    for(let i=list.length-1;i>0;i--){
+      const j=generatorChoice(layer*131+i*17,i+1,23);
+      if(i!==j){
+        const tmp=list[i];
+        list[i]=list[j];
+        list[j]=tmp;
+      }
+    }
+
     const mirrorLayer=maxLayer-layer;
-    const resourceOffset=Math.min(layer,mirrorLayer);
+    const resourceOffset=Math.min(layer,mirrorLayer)+generatorChoice(layer*41+7,3,29);
 
     for(let index=0;index<list.length;index++){
-      const resource=["wood","stone","gold"][(index+resourceOffset)%3];
+      const biome=villageBiome(list[index]);
+      const biomeBias=
+        biome==="mountain" ? 1 :
+        biome==="forest" ? 0 :
+        biome==="hills" ? 2 :
+        0;
+      let resource=["wood","stone","gold"][(index+resourceOffset+biomeBias)%3];
+
+      if(
+        richness>1&&
+        generatorRandom(layer*173+index*31,37)<(richness-1)*.55
+      ){
+        resource=biome==="forest"?"wood":biome==="mountain"?"stone":"gold";
+      }
+
       generatedResourceMap.set(list[index].id,resource);
       list[index].specialResource=resource;
     }
@@ -7913,7 +8677,12 @@ function assignGeneratedResources(template){
     .filter(v=>v.layer>=Math.floor(maxLayer*.58))
     .sort((a,b)=>b.layer-a.layer||a.x-b.x);
 
-  for(const [index,resource] of ["wood","stone","gold"].entries()){
+  const guaranteedPerSide=3+(richness>=1.18?1:0);
+  const guaranteedOrder=["wood","stone","gold","gold"];
+
+  for(let index=0;index<guaranteedPerSide;index++){
+    const resource=guaranteedOrder[index]||"gold";
+
     if(lower[index]){
       lower[index].specialResource=resource;
       generatedResourceMap.set(lower[index].id,resource);
@@ -7926,98 +8695,232 @@ function assignGeneratedResources(template){
   }
 }
 
-function generateMap(sizeKey){
+function generateMap(sizeKey,seed=null){
+  const explicitSeed=seed!==null&&seed!==undefined;
   const config=MAP_CONFIGS[sizeKey]||MAP_CONFIGS.medium;
+  const params=mapGeneratorParamsFor(config);
+
   selectedMapSize=sizeKey in MAP_CONFIGS?sizeKey:"medium";
   worldWidth=config.width;
   worldHeight=config.height;
+
+  const baseSeed=explicitSeed
+    ? normalizeMapSeed(seed)
+    : createAutoMapSeed(selectedMapSize);
 
   const counts=config.counts;
   const totalLayers=counts.length;
   const topMargin=130;
   const bottomMargin=150;
   const usableHeight=worldHeight-topMargin-bottomMargin;
-  const layerStep=usableHeight/(totalLayers-1);
-  const layers=[];
-  const template=[];
-  let neutralIndex=0;
+  const layerStep=usableHeight/Math.max(1,totalLayers-1);
 
-  for(let layer=0;layer<totalLayers;layer++){
-    const count=counts[layer];
-    const y=worldHeight-bottomMargin-layer*layerStep;
-    const xs=layerPositions(count,worldWidth,layer,totalLayers);
-    const layerVillages=[];
+  let chosenTemplate=[];
+  let chosenRoadMap=new Map();
+  let generatedOk=false;
 
-    for(let index=0;index<count;index++){
-      let village;
+  for(let attempt=0;attempt<MAP_GENERATION_MAX_ATTEMPTS;attempt++){
+    setupMapGenerationSeed(baseSeed,selectedMapSize,attempt);
 
-      if(layer===0){
-        village={
-          id:"P0",
-          x:xs[index],
-          y,
-          owner:FACTIONS.PLAYER,
-          name:"Spielerburg",
-          layer,
-          isCapital:true
-        };
-      }else if(layer===totalLayers-1){
-        village={
-          id:"A0",
-          x:xs[index],
-          y,
-          owner:FACTIONS.AI,
-          name:"KI-Festung",
-          layer,
-          isCapital:true
-        };
-      }else{
-        const id=`V${layer}_${index}`;
-        village={
-          id,
-          x:xs[index],
-          y,
-          owner:FACTIONS.NEUTRAL,
-          name:VILLAGE_NAMES[neutralIndex%VILLAGE_NAMES.length],
-          layer
-        };
-        neutralIndex++;
+    const layers=[];
+    const template=[];
+    let neutralIndex=0;
+
+    for(let layer=0;layer<totalLayers;layer++){
+      const count=counts[layer];
+      const baseY=worldHeight-bottomMargin-layer*layerStep;
+      const positions=layerPositions(
+        count,
+        worldWidth,
+        layer,
+        totalLayers,
+        layerStep,
+        params,
+        false
+      );
+      const layerVillages=[];
+
+      for(let index=0;index<count;index++){
+        const position=positions[index];
+        const y=Math.max(
+          topMargin+16,
+          Math.min(worldHeight-bottomMargin-16,baseY+(position?.yOffset||0))
+        );
+        let village;
+
+        if(layer===0){
+          village={
+            id:"P0",
+            x:position.x,
+            y,
+            owner:FACTIONS.PLAYER,
+            name:"Spielerburg",
+            layer,
+            isCapital:true
+          };
+        }else if(layer===totalLayers-1){
+          village={
+            id:"A0",
+            x:position.x,
+            y,
+            owner:FACTIONS.AI,
+            name:"KI-Festung",
+            layer,
+            isCapital:true
+          };
+        }else{
+          const id=`V${layer}_${index}`;
+          village={
+            id,
+            x:position.x,
+            y,
+            owner:FACTIONS.NEUTRAL,
+            name:VILLAGE_NAMES[neutralIndex%VILLAGE_NAMES.length],
+            layer
+          };
+          neutralIndex++;
+        }
+
+        template.push(village);
+        layerVillages.push(village);
       }
 
-      template.push(village);
-      layerVillages.push(village);
+      layers.push(layerVillages);
     }
 
-    layers.push(layerVillages);
-  }
+    const roadMap=new Map();
 
-  const roadMap=new Map();
+    for(let layer=0;layer<layers.length-1;layer++){
+      connectAdjacentLayers(
+        layers[layer],
+        layers[layer+1],
+        roadMap,
+        params,
+        false
+      );
+    }
 
-  for(let layer=0;layer<layers.length-1;layer++){
-    connectAdjacentLayers(layers[layer],layers[layer+1],roadMap);
-  }
+    // In größeren Karten entstehen zusätzliche horizontale Wege und Umgehungsrouten.
+    for(let layer=1;layer<layers.length-1;layer++){
+      const current=[...layers[layer]].sort((a,b)=>a.x-b.x);
 
-  // In größeren Karten entstehen zusätzliche horizontale Wege und Umgehungsrouten.
-  for(let layer=1;layer<layers.length-1;layer++){
-    const current=[...layers[layer]].sort((a,b)=>a.x-b.x);
+      for(let index=0;index<current.length-1;index++){
+        const shouldConnect=
+          generatorRandom(layer*97+index*13,89)<
+          (config.villages<=12
+            ? (.20+params.connectionVariation*.34)
+            : config.villages<=20
+              ? (.26+params.connectionVariation*.34)
+              : (.34+params.connectionVariation*.30));
 
-    for(let index=0;index<current.length-1;index++){
-      const shouldConnect=
-        config.villages<=12 ? index%2===0 :
-        config.villages<=20 ? (index+layer)%3===0 :
-        (index+layer)%2===0;
+        if(!shouldConnect)continue;
 
-      if(shouldConnect){
+        const a=current[index];
+        const b=current[index+1];
+        const distance=Math.abs(a.x-b.x);
+
+        if(distance>Math.max(worldWidth*.22,260))continue;
+
         roadMap.set(
-          roadKey(current[index].id,current[index+1].id),
-          [current[index].id,current[index+1].id]
+          roadKey(a.id,b.id),
+          [a.id,b.id]
         );
       }
     }
+
+    if(validateRoadGraph(template,[...roadMap.values()])){
+      chosenTemplate=template;
+      chosenRoadMap=roadMap;
+      generatedOk=true;
+      break;
+    }
   }
 
-  villageTemplate=template;
-  roads=[...roadMap.values()];
+  if(!generatedOk){
+    setupMapGenerationSeed(baseSeed,selectedMapSize,MAP_GENERATION_MAX_ATTEMPTS);
+
+    const layers=[];
+    const template=[];
+    let neutralIndex=0;
+
+    for(let layer=0;layer<totalLayers;layer++){
+      const count=counts[layer];
+      const baseY=worldHeight-bottomMargin-layer*layerStep;
+      const positions=layerPositions(
+        count,
+        worldWidth,
+        layer,
+        totalLayers,
+        layerStep,
+        params,
+        true
+      );
+      const layerVillages=[];
+
+      for(let index=0;index<count;index++){
+        const position=positions[index];
+        const y=baseY+(position?.yOffset||0);
+        let village;
+
+        if(layer===0){
+          village={
+            id:"P0",
+            x:position.x,
+            y,
+            owner:FACTIONS.PLAYER,
+            name:"Spielerburg",
+            layer,
+            isCapital:true
+          };
+        }else if(layer===totalLayers-1){
+          village={
+            id:"A0",
+            x:position.x,
+            y,
+            owner:FACTIONS.AI,
+            name:"KI-Festung",
+            layer,
+            isCapital:true
+          };
+        }else{
+          const id=`V${layer}_${index}`;
+          village={
+            id,
+            x:position.x,
+            y,
+            owner:FACTIONS.NEUTRAL,
+            name:VILLAGE_NAMES[neutralIndex%VILLAGE_NAMES.length],
+            layer
+          };
+          neutralIndex++;
+        }
+
+        template.push(village);
+        layerVillages.push(village);
+      }
+
+      layers.push(layerVillages);
+    }
+
+    const roadMap=new Map();
+
+    for(let layer=0;layer<layers.length-1;layer++){
+      connectAdjacentLayers(
+        layers[layer],
+        layers[layer+1],
+        roadMap,
+        params,
+        true
+      );
+    }
+
+    ensureFallbackConnectivity(template,roadMap);
+    chosenTemplate=template;
+    chosenRoadMap=roadMap;
+  }
+
+  villageTemplate=chosenTemplate;
+  roads=[...chosenRoadMap.values()];
   assignGeneratedResources(villageTemplate);
   generateBiomeRegions();
   generateReliefLayer();
@@ -8062,11 +8965,11 @@ function regenerateMapEnvironment(){
 
   for(let index=0;index<neutral.length;index++){
     const village=neutral[index];
-    const side=index%2===0?1:-1;
+    const side=seededValue(index*37+3)<.5?1:-1;
     const offset=48+seededValue(index*19)*24;
     const x=Math.max(30,Math.min(worldWidth-30,village.x+side*offset));
-    const y=village.y+(seededValue(index*23)-.5)*58;
-    const type=["bushDense","bushLight","weeds","rockSmall"][index%4];
+    const y=village.y+(seededValue(index*23)-.5)*(44+seededValue(index*71)*32);
+    const type=["bushDense","bushLight","weeds","rockSmall"][generatorChoice(index*29+11,4,41)];
 
     ENVIRONMENT_OBJECTS.push({
       type,x,y,
@@ -8131,6 +9034,8 @@ function bindGameVersionLabels(){
   if(inGameVersionBadge){
     inGameVersionBadge.textContent=`DORFKRIEG REMASTERED · v${GAME_VERSION}`;
   }
+
+  updateActiveMapSeedBadge(selectedMapSeedInput);
 }
 
 function migrateSaveData(saveData){
@@ -8811,6 +9716,142 @@ function animateRandomFaction(select,preview,button){
   },90);
 }
 
+function normalizeMapPresetId(value){
+  return MAP_GENERATION_PRESETS[value]
+    ? value
+    : "standard";
+}
+
+function selectedMapPreset(){
+  return getMapPresetById(selectedMapPresetId);
+}
+
+function mapSeedSourceText(){
+  return String(selectedMapSeedInput||"").trim();
+}
+
+function buildMapSeedLabel(sourceText,activeSeed){
+  if(sourceText){
+    return sourceText.length>28
+      ? `${sourceText.slice(0,28)}... (#${activeSeed})`
+      : `${sourceText} (#${activeSeed})`;
+  }
+
+  return String(activeSeed||"-");
+}
+
+function updateActiveMapSeedBadge(sourceSeedText=""){
+  if(sourceSeedText!==undefined&&sourceSeedText!==null){
+    selectedMapSeedInput=String(sourceSeedText).trim();
+  }
+
+  if(!activeMapSeedBadge)return;
+
+  const preset=selectedMapPreset();
+  const meta=typeof getMapGeneratorMeta==="function"
+    ? getMapGeneratorMeta()
+    : null;
+  const activeSeed=Number.isFinite(Number(meta?.seed))
+    ? Number(meta.seed)
+    : (typeof getCurrentMapSeed==="function"?getCurrentMapSeed():0);
+  const seedLabel=buildMapSeedLabel(mapSeedSourceText(),activeSeed);
+  const text=`${preset.name} · Seed: ${seedLabel}`;
+
+  activeMapSeedBadge.textContent=text;
+  activeMapSeedBadge.title=`${preset.name} · Seed: ${mapSeedSourceText()||activeSeed}`;
+}
+
+function setMapSeedInputValue(value){
+  const text=String(value??"").slice(0,120);
+  if(mapSeedInput)mapSeedInput.value=text;
+  selectedMapSeedInput=text.trim();
+  updateActiveMapSeedBadge(selectedMapSeedInput);
+}
+
+function randomizeMapSeedInput(){
+  const sizeKey=mapSizeSelect?.value||selectedMapSize;
+  const seed=createAutoMapSeed(sizeKey);
+  setMapSeedInputValue(seed);
+  return seed;
+}
+
+function copyTextWithFallback(value){
+  const text=String(value??"");
+  if(!text)return Promise.resolve(false);
+
+  if(navigator?.clipboard?.writeText){
+    return navigator.clipboard.writeText(text)
+      .then(()=>true)
+      .catch(()=>false);
+  }
+
+  try{
+    const textarea=document.createElement("textarea");
+    textarea.value=text;
+    textarea.setAttribute("readonly","true");
+    textarea.style.position="fixed";
+    textarea.style.opacity="0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied=document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return Promise.resolve(Boolean(copied));
+  }catch(_error){
+    return Promise.resolve(false);
+  }
+}
+
+function seedValueForCopy(){
+  const text=String(mapSeedInput?.value||selectedMapSeedInput||"").trim();
+  if(text)return text;
+
+  const meta=typeof getMapGeneratorMeta==="function"
+    ? getMapGeneratorMeta()
+    : null;
+  const activeSeed=Number.isFinite(Number(meta?.seed))
+    ? Number(meta.seed)
+    : (typeof getCurrentMapSeed==="function"?getCurrentMapSeed():0);
+
+  return activeSeed?String(activeSeed):"";
+}
+
+function flashButtonLabel(button,label,fallbackLabel){
+  if(!button)return;
+  const previous=fallbackLabel||button.textContent;
+  button.textContent=label;
+  window.setTimeout(()=>{
+    button.textContent=previous;
+  },900);
+}
+
+function populateMapPresetSelect(){
+  if(!mapPresetSelect)return;
+  mapPresetSelect.innerHTML="";
+
+  for(const preset of Object.values(MAP_GENERATION_PRESETS)){
+    const option=document.createElement("option");
+    option.value=preset.id;
+    option.textContent=preset.name;
+    option.selected=preset.id===selectedMapPresetId;
+    mapPresetSelect.appendChild(option);
+  }
+}
+
+function currentSerializableMapGenerationState(){
+  const runtimeConfig=getRuntimeMapGenerationConfig();
+
+  return {
+    mapSeed,
+    mapPresetId:selectedMapPresetId,
+    selectedMapSize,
+    generatorVersion:
+      runtimeConfig?.generatorVersion||
+      MAP_GENERATOR_VERSION
+  };
+}
+
+window.getMapGenerationSelectionState=currentSerializableMapGenerationState;
+
 function mapPreviewData(sizeKey){
   const config=MAP_CONFIGS[sizeKey]||MAP_CONFIGS.medium;
   const width=108;
@@ -8851,6 +9892,10 @@ function mapPreviewData(sizeKey){
 
 function updateMapSizePreview(){
   const {config,nodes,roadsPreview}=mapPreviewData(mapSizeSelect.value);
+  const presetId=normalizeMapPresetId(
+    mapPresetSelect?.value||selectedMapPresetId
+  );
+  const preset=getMapPresetById(presetId);
   mapPreviewDiagram.innerHTML="";
 
   for(const[from,to]of roadsPreview){
@@ -8885,7 +9930,7 @@ function updateMapSizePreview(){
 
   mapPreviewTitle.textContent=config.name;
   mapPreviewDetails.textContent=
-    `${config.villages} Siedlungen · ${config.playtime} · ${config.description}`;
+    `${config.villages} Siedlungen · ${config.playtime} · ${config.description} · ${preset.name}`;
 }
 
 
@@ -8971,6 +10016,17 @@ function emergencyInitializeStartMenu(){
     mapSizeSelect.value=selectedMapSize;
   }
 
+  selectedMapPresetId=normalizeMapPresetId(selectedMapPresetId);
+  populateMapPresetSelect();
+
+  if(mapPresetSelect){
+    mapPresetSelect.value=selectedMapPresetId;
+  }
+
+  if(mapSeedInput){
+    mapSeedInput.value=selectedMapSeedInput;
+  }
+
   playerFactionSelect?.addEventListener("change",()=>{
     emergencyFactionPreview(
       playerFactionPreview,
@@ -9000,12 +10056,37 @@ function emergencyInitializeStartMenu(){
       "Kartenvorschau",
       updateMapSizePreview
     );
+    updateActiveMapSeedBadge(mapSeedInput?.value||selectedMapSeedInput);
+  });
+
+  mapPresetSelect?.addEventListener("change",()=>{
+    selectedMapPresetId=normalizeMapPresetId(mapPresetSelect.value);
+    updateMapSizePreview();
+    updateActiveMapSeedBadge(mapSeedInput?.value||selectedMapSeedInput);
+  });
+
+  mapSeedInput?.addEventListener("input",()=>{
+    selectedMapSeedInput=String(mapSeedInput.value||"").trim();
+    updateActiveMapSeedBadge(selectedMapSeedInput);
+  });
+
+  mapSeedRandomBtn?.addEventListener("click",()=>{
+    randomizeMapSeedInput();
+    flashButtonLabel(mapSeedRandomBtn,"Neu","Zufällig");
+  });
+
+  mapSeedCopyBtn?.addEventListener("click",()=>{
+    const value=seedValueForCopy();
+    copyTextWithFallback(value).then(copied=>{
+      flashButtonLabel(mapSeedCopyBtn,copied?"Kopiert":"Kein Zugriff","Kopieren");
+    });
   });
 
   safeStartupStep(
     "Kartenvorschau",
     updateMapSizePreview
   );
+  updateActiveMapSeedBadge(mapSeedInput?.value||selectedMapSeedInput);
 
   randomPlayerFactionBtn?.addEventListener("click",()=>{
     animateRandomFaction(playerFactionSelect,playerFactionPreview,randomPlayerFactionBtn);
@@ -9020,8 +10101,13 @@ function initializeStartMenu(){
   fillFactionSelect(aiFactionSelect,aiFaction);
   renderFactionPreview(playerFactionPreview,playerFaction);
   renderFactionPreview(aiFactionPreview,aiFaction);
+  selectedMapPresetId=normalizeMapPresetId(selectedMapPresetId);
+  populateMapPresetSelect();
   mapSizeSelect.value=selectedMapSize;
+  mapPresetSelect.value=selectedMapPresetId;
+  mapSeedInput.value=selectedMapSeedInput;
   updateMapSizePreview();
+  updateActiveMapSeedBadge(mapSeedInput.value||selectedMapSeedInput);
 
   playerFactionSelect.addEventListener("change",()=>{
     renderFactionPreview(
@@ -9040,6 +10126,32 @@ function initializeStartMenu(){
 
   playerFactionSelect.addEventListener("change",updateMapSizePreview);
   mapSizeSelect.addEventListener("change",updateMapSizePreview);
+  mapSizeSelect.addEventListener("change",()=>{
+    updateActiveMapSeedBadge(mapSeedInput.value||selectedMapSeedInput);
+  });
+
+  mapPresetSelect.addEventListener("change",()=>{
+    selectedMapPresetId=normalizeMapPresetId(mapPresetSelect.value);
+    updateMapSizePreview();
+    updateActiveMapSeedBadge(mapSeedInput.value||selectedMapSeedInput);
+  });
+
+  mapSeedInput.addEventListener("input",()=>{
+    selectedMapSeedInput=String(mapSeedInput.value||"").trim();
+    updateActiveMapSeedBadge(selectedMapSeedInput);
+  });
+
+  mapSeedRandomBtn?.addEventListener("click",()=>{
+    randomizeMapSeedInput();
+    flashButtonLabel(mapSeedRandomBtn,"Neu","Zufällig");
+  });
+
+  mapSeedCopyBtn?.addEventListener("click",()=>{
+    const value=seedValueForCopy();
+    copyTextWithFallback(value).then(copied=>{
+      flashButtonLabel(mapSeedCopyBtn,copied?"Kopiert":"Kein Zugriff","Kopieren");
+    });
+  });
 
   randomPlayerFactionBtn?.addEventListener("click",()=>{
     animateRandomFaction(playerFactionSelect,playerFactionPreview,randomPlayerFactionBtn);
@@ -11662,8 +12774,56 @@ function startConfiguredGame(){
   difficultySelect.value=String(aiDifficulty);
   speedSelect.value=String(gameSpeed);
 
+  // 1) Kartengröße lesen.
   selectedMapSize=mapSizeSelect.value;
-  generateMap(selectedMapSize);
+
+  // 2) Kartentyp lesen und validieren.
+  selectedMapPresetId=normalizeMapPresetId(
+    mapPresetSelect?.value||selectedMapPresetId
+  );
+
+  if(mapPresetSelect){
+    mapPresetSelect.value=selectedMapPresetId;
+  }
+
+  // 3) Effektive Generator-Konfiguration erzeugen.
+  const effectiveGenerationConfig=getEffectiveMapGenerationConfig(
+    selectedMapSize,
+    selectedMapPresetId
+  );
+
+  // 4) Seed aus Eingabe normalisieren oder automatisch erzeugen.
+  const seedText=String(mapSeedInput?.value||"").trim();
+  const usedAutoSeed=!seedText;
+  const effectiveSeed=usedAutoSeed
+    ? createAutoMapSeed(selectedMapSize)
+    : normalizeMapSeed(seedText);
+
+  selectedMapSeedInput=usedAutoSeed
+    ? ""
+    : seedText;
+
+  // 5) Runtime-Generator-Konfiguration setzen.
+  setRuntimeMapGenerationConfig(effectiveGenerationConfig);
+
+  // 6) Karte mit Größe + Seed erzeugen.
+  generateMap(selectedMapSize,effectiveSeed);
+
+  // 7) Tatsächlich aktiven Seed auslesen.
+  const activeMeta=typeof getMapGeneratorMeta==="function"
+    ? getMapGeneratorMeta()
+    : null;
+  const activeSeed=Number.isFinite(Number(activeMeta?.seed))
+    ? Number(activeMeta.seed)
+    : (typeof getCurrentMapSeed==="function"?getCurrentMapSeed():effectiveSeed);
+
+  if(!Number.isFinite(Number(activeSeed))){
+    selectedMapSeedInput=String(effectiveSeed);
+  }
+
+  // 8) Seed-Anzeige aktualisieren.
+  updateActiveMapSeedBadge(selectedMapSeedInput);
+
   closePopup();
   clearMapGesture();
   resetGame();
@@ -22802,6 +23962,10 @@ Vorherige v18.48 Stabilitätsphase:
     startDifficultySelect:['Schwierigkeit','Verändert Planung, Reaktion und wirtschaftliche Stärke der KI. Die grundlegenden Regeln bleiben für beide Seiten gleich.'],
     startSpeedSelect:['Spieltempo','Verändert, wie schnell die gesamte Simulation läuft. Timer, Bewegung, Kampf und Produktion folgen diesem Tempo.'],
     mapSizeSelect:['Kartengröße','Legt Anzahl der Siedlungen, Spieldauer und Zahl möglicher Fronten fest.'],
+    mapPresetSelect:['Kartentyp','Steuert Generator-Presets für Natur, Relief, Wasser und Verbindungen. Gleicher Seed plus gleiche Einstellungen erzeugt dieselbe Karte.'],
+    mapSeedInput:['Karten-Seed','Leeres Feld erzeugt beim Start automatisch einen neuen Seed. Gleiches Seed mit gleicher Größe und gleichem Kartentyp erzeugt dieselbe Karte.'],
+    mapSeedRandomBtn:['Zufällig','Erzeugt sofort einen neuen Seed und trägt ihn in das Seed-Feld ein.'],
+    mapSeedCopyBtn:['Kopieren','Kopiert den sichtbaren Seed aus dem Eingabefeld für reproduzierbare Partien.'],
     fogSelect:['Schatten des Krieges','Verdeckt Gebiete außerhalb deiner Sicht. Eigene Dörfer und Einheiten decken die Umgebung auf.'],
     pauseOnlyBtn:['Pause','Hält die Simulation an und öffnet das Pausenmenü.'],
     inGameGuideBtn:['Anleitung','Öffnet während der Partie die ausführliche Anleitung.'],
@@ -25140,7 +26304,17 @@ globalThis.DorfkriegLivingWorld=()=>({version:'19.2',audit:M.validate(),location
   }
   function ensureLocations(){
     if(!Array.isArray(villages)||!villages.length)return;
-    const required=3;
+    const runtimeConfig=typeof getRuntimeMapGenerationConfig==='function'
+      ? getRuntimeMapGenerationConfig()
+      : null;
+    const specialDensity=Math.max(
+      .8,
+      Math.min(
+        1.4,
+        Number(runtimeConfig?.generator?.specialLocationDensity)||1
+      )
+    );
+    const required=Math.max(2,Math.min(5,Math.round(3*specialDensity)));
     const current=active();
     const key=`${villages.length}:${current.length}`;
     if(current.length>=required*3){state.generationKey=key;return;}

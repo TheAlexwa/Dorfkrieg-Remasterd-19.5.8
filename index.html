@@ -5097,6 +5097,9 @@ function minimapToWorld(x,y){
 }
 
 function isCurrentlyVisibleToPlayer(x,y){
+  if(typeof globalThis.isPlayerActiveVisibleArea==='function'){
+    return !!globalThis.isPlayerActiveVisibleArea(x,y);
+  }
   if(!fogEnabled)return true;
 
   for(const village of villages){
@@ -5126,7 +5129,9 @@ function isCurrentlyVisibleToPlayer(x,y){
 
 function minimapVillageVisible(village){
   return village.owner===FACTIONS.PLAYER||
-    isCurrentlyVisibleToPlayer(village.x,village.y);
+    isCurrentlyVisibleToPlayer(village.x,village.y)||
+    (typeof globalThis.isExploredByPlayerArea==='function'&&
+      globalThis.isExploredByPlayerArea(village.x,village.y));
 }
 
 function drawMinimap(){
@@ -11659,6 +11664,9 @@ function resetGame(){
     "A0",
     ...getConnected(aiCapital).map(v=>v.id)
   ]);
+  if(typeof globalThis.resetExploredAreaMemory==='function'){
+    globalThis.resetExploredAreaMemory();
+  }
   closePopup();
   hintText.textContent="v18.4 aktiv: Dorfbelagerungen, Garnisonsverteidigung und Straßenkämpfe nutzen gemeinsame Einheitenwerte.";
   refreshBridgeGraphics();
@@ -19959,16 +19967,18 @@ v1813DrawVillageBuildings=function(village){
 (function(){
   const DEFENSE_BUILDINGS={
     wall:{name:'Mauer',icon:'🧱',maxLevel:3,cost:{gold:40,wood:30,stone:25}},
-    tower:{name:'Turm',icon:'🗼',maxLevel:3,cost:{gold:45,wood:25,stone:35}}
+    tower:{name:'Turm',icon:'🗼',maxLevel:4,cost:{gold:45,wood:25,stone:35}}
   };
   const WALL_HP_BONUS=[0,40,80,140];
-  const TOWER_DAMAGE=[0,1,2,3];
-  const TOWER_INTERVAL=[Infinity,8,5,4];
+  const TOWER_DAMAGE=[0,1,2,3,4];
+  const TOWER_INTERVAL=[Infinity,8,5,4,3];
+  const TOWER_RANGE_PERCENT=[0,30,40,50,60];
 
   function ensureDefenseBuildings(v){
     if(!v.defenseBuildings||typeof v.defenseBuildings!=='object')v.defenseBuildings={wall:0,tower:0};
     for(const key of Object.keys(DEFENSE_BUILDINGS)){
-      v.defenseBuildings[key]=Math.max(0,Math.min(3,Math.floor(Number(v.defenseBuildings[key])||0)));
+      const max=DEFENSE_BUILDINGS[key].maxLevel||3;
+      v.defenseBuildings[key]=Math.max(0,Math.min(max,Math.floor(Number(v.defenseBuildings[key])||0)));
     }
     if(!Number.isFinite(v.towerFireTimer))v.towerFireTimer=0;
     return v.defenseBuildings;
@@ -19982,7 +19992,11 @@ v1813DrawVillageBuildings=function(village){
   function levelAllowed(v,nextLevel){return (v.tier||0)>=requiredSettlementTier(nextLevel);}
   function defenseUpgradeCost(key,nextLevel){
     const base=DEFENSE_BUILDINGS[key].cost;
-    const scale=nextLevel===1?1:nextLevel===2?1.55:2.25;
+    const scale=
+      nextLevel===1?1:
+      nextLevel===2?1.55:
+      nextLevel===3?2.25:
+      3.1;
     return {gold:Math.ceil(base.gold*scale/5)*5,wood:Math.ceil(base.wood*scale/5)*5,stone:Math.ceil(base.stone*scale/5)*5};
   }
   function wallHpBonus(v){return WALL_HP_BONUS[defenseLevel(v,'wall')]||0;}
@@ -19999,17 +20013,18 @@ v1813DrawVillageBuildings=function(village){
   v18BuildingInfoData=function(v,kind,key){
     if(kind==='defense'){
       const data=DEFENSE_BUILDINGS[key];
-      const level=defenseLevel(v,key),next=Math.min(3,level+1),maxed=level>=3;
+      const maxLevel=data.maxLevel||3;
+      const level=defenseLevel(v,key),next=Math.min(maxLevel,level+1),maxed=level>=maxLevel;
       const cost=maxed?null:defenseUpgradeCost(key,next);
       const allowed=maxed?false:levelAllowed(v,next);
       const currentWall=key==='wall'?WALL_HP_BONUS[level]:0;
       const nextWall=key==='wall'?WALL_HP_BONUS[next]:0;
       return {
-        icon:data.icon,name:`${data.name} · Stufe ${level}/3`,built:level>0,cost,
+        icon:data.icon,name:`${data.name} · Stufe ${level}/${maxLevel}`,built:level>0,cost,
         description:key==='wall'?'Erhöht das maximale Dorfleben dauerhaft.':'Schießt Pfeile auf Feinde, die sich auf angrenzenden Straßen in Reichweite befinden.',
         benefits:key==='wall'?
           [['❤️ Aktuell',`+${currentWall} maximales Dorfleben.`],['⬆ Nächste Stufe',maxed?'Maximal ausgebaut.':`+${nextWall} maximales Dorfleben.`],['🏘 Voraussetzung',maxed?'Keine weitere Stufe.':settlementRequirementText(next)],['🛡 Wirkung','Mehr Lebenspunkte verlängern jede Belagerung.']]:
-          [['🎯 Aktuell',level?`${TOWER_DAMAGE[level]} Schaden · ${[0,30,40,50][level]} % Straßenreichweite · alle ${TOWER_INTERVAL[level]} s.`:'Noch kein automatischer Beschuss.'],['⬆ Nächste Stufe',maxed?'Maximal ausgebaut.':`${TOWER_DAMAGE[next]} Schaden · ${[0,30,40,50][next]} % Straßenreichweite · alle ${TOWER_INTERVAL[next]} s.`],['🏘 Voraussetzung',maxed?'Keine weitere Stufe.':settlementRequirementText(next)],['⚔ Wirkung','Pfeile treffen einmal und verschwinden. Beschuss nur bei Feinden auf angrenzenden Straßen.']],
+          [['🎯 Aktuell',level?`${TOWER_DAMAGE[level]} Schaden · ${TOWER_RANGE_PERCENT[level]} % Straßenreichweite · alle ${TOWER_INTERVAL[level]} s.`:'Noch kein automatischer Beschuss.'],['⬆ Nächste Stufe',maxed?'Maximal ausgebaut.':`${TOWER_DAMAGE[next]} Schaden · ${TOWER_RANGE_PERCENT[next]} % Straßenreichweite · alle ${TOWER_INTERVAL[next]} s.`],['🏘 Voraussetzung',maxed?'Keine weitere Stufe.':settlementRequirementText(next)],['⚔ Wirkung','Pfeile treffen einmal und verschwinden. Beschuss nur bei Feinden auf angrenzenden Straßen.']],
         buildLabel:maxed?'Maximal':!allowed?settlementRequirementText(next):(level===0?`Bauen · ${costText(cost)}`:`Auf Stufe ${next} · ${costText(cost)}`),
         canBuild:!maxed&&allowed&&canAfford(playerRes,cost),
         lockedByTier:!maxed&&!allowed,
@@ -20060,8 +20075,8 @@ v1813DrawVillageBuildings=function(village){
       b.onclick=()=>showV18BuildingInfo(v,kind,key);grid.appendChild(b);
     };
     add('tier','tier','🏘',visualSettlementStage(v),v.tier,3);
-    add('defense','wall',DEFENSE_BUILDINGS.wall.icon,DEFENSE_BUILDINGS.wall.name,defenseLevel(v,'wall'));
-    add('defense','tower',DEFENSE_BUILDINGS.tower.icon,DEFENSE_BUILDINGS.tower.name,defenseLevel(v,'tower'));
+    add('defense','wall',DEFENSE_BUILDINGS.wall.icon,DEFENSE_BUILDINGS.wall.name,defenseLevel(v,'wall'),DEFENSE_BUILDINGS.wall.maxLevel);
+    add('defense','tower',DEFENSE_BUILDINGS.tower.icon,DEFENSE_BUILDINGS.tower.name,defenseLevel(v,'tower'),DEFENSE_BUILDINGS.tower.maxLevel);
     for(const key of Object.keys(MILITARY_FACILITIES))add('military',key,MILITARY_FACILITIES[key].icon,MILITARY_FACILITIES[key].name,facilityLevel(v,key));
     const econ=v1813EnsureEconomyBuildings(v);
     for(const key of ['farm','lumber','quarry','market'])add('economy',key,ECONOMY[key].icon,ECONOMY[key].name,econ[key]||0);
@@ -20097,9 +20112,9 @@ v1813DrawVillageBuildings=function(village){
   // v18.23 – Türme schießen sichtbare Pfeile entlang angrenzender Straßen.
   // Pfeile besitzen keine eigenen Lebenspunkte, verursachen genau einen Treffer
   // und verschwinden anschließend.
-  const TOWER_RANGE_FRACTION=[0,.30,.40,.50];
-  const TOWER_SHOT_DAMAGE=[0,1,2,3];
-  const TOWER_SHOT_INTERVAL=[Infinity,8,5,4];
+  const TOWER_RANGE_FRACTION=[0,.30,.40,.50,.60];
+  const TOWER_SHOT_DAMAGE=[0,1,2,3,4];
+  const TOWER_SHOT_INTERVAL=[Infinity,8,5,4,3];
   const towerRoadArrows=[];
   let towerArrowSequence=1;
 
@@ -20217,13 +20232,20 @@ v1813DrawVillageBuildings=function(village){
       const cap=Math.max(0,Math.min(3,v.tier||0));
       for(const key of Object.keys(MILITARY_FACILITIES))ensureFacilityLevels(v)[key]=Math.min(facilityLevel(v,key),cap);
       const econ=v1813EnsureEconomyBuildings(v);for(const key of ['farm','lumber','quarry','market'])econ[key]=Math.min(econ[key]||0,cap);
-      for(const key of ['wall','tower'])v.defenseBuildings[key]=Math.min(v.defenseBuildings[key]||0,cap);
+      for(const key of ['wall','tower']){
+        const keyMax=DEFENSE_BUILDINGS[key].maxLevel||3;
+        const keyCap=key==='tower'
+          ? Math.min(keyMax,Math.max(0,Math.min(4,(v.tier||0)+1)))
+          : Math.min(keyMax,cap);
+        v.defenseBuildings[key]=Math.min(v.defenseBuildings[key]||0,keyCap);
+      }
     }
     if(aiDefenseTimer<6)return;aiDefenseTimer=0;
     for(const v of villages){
       if(v.owner!==FACTIONS.AI||v.tier<1)continue;
       for(const key of ['wall','tower']){
-        const level=defenseLevel(v,key),next=level+1;if(next>3||!levelAllowed(v,next))continue;
+        const maxLevel=DEFENSE_BUILDINGS[key].maxLevel||3;
+        const level=defenseLevel(v,key),next=level+1;if(next>maxLevel||!levelAllowed(v,next))continue;
         const cost=defenseUpgradeCost(key,next);if(!canAfford(aiRes,cost))continue;
         const oldMax=tier(v).hp;pay(aiRes,cost);ensureDefenseBuildings(v)[key]=next;
         if(key==='wall')v.hp=Math.min(tier(v).hp,v.hp+(tier(v).hp-oldMax));
@@ -22776,10 +22798,765 @@ Vorherige v18.48 Stabilitätsphase:
 
 
 <script>
-/* v18.57 – sanfte Bauernphase und echter Schatten des Krieges */
+/* v20.1 – Territoriumssystem: verschmolzene Landesflaechen und FoW */
 (function(){
   'use strict';
   const villageIntel=new Map();
+  const FOG_EXPLORE_CELL_SIZE=14;
+  const TERRITORY_CELL_SIZE=18;
+  const territoryState={
+    signature:'',
+    gridW:0,
+    gridH:0,
+    cellSize:TERRITORY_CELL_SIZE,
+    ownerGrid:[],
+    villageGrid:[],
+    villageCellIndices:new Map(),
+    villageTerritoryRadius:new Map(),
+    factionMasks:new Map(),
+    borderPaths:new Map()
+  };
+  const fogExploreState={
+    gridW:0,
+    gridH:0,
+    cellSize:FOG_EXPLORE_CELL_SIZE,
+    cells:new Uint8Array(0),
+    worldMask:document.createElement('canvas'),
+    worldCtx:null
+  };
+  fogExploreState.worldCtx=fogExploreState.worldMask.getContext('2d');
+  const villageVisionState={
+    signature:'',
+    worldMask:document.createElement('canvas'),
+    worldCtx:null
+  };
+  villageVisionState.worldCtx=villageVisionState.worldMask.getContext('2d');
+  const activeVisionState={
+    worldMask:document.createElement('canvas'),
+    worldCtx:null
+  };
+  activeVisionState.worldCtx=activeVisionState.worldMask.getContext('2d');
+
+  const TOWER_VISIBILITY_RADIUS_FACTOR={
+    0:0.25,
+    1:0.25,
+    2:0.5,
+    3:0.75,
+    4:1
+  };
+
+  function resetExploredAreaMemory(){
+    ensureFogExploreState();
+    fogExploreState.cells.fill(0);
+    fogExploreState.worldCtx.clearRect(
+      0,
+      0,
+      fogExploreState.worldMask.width,
+      fogExploreState.worldMask.height
+    );
+  }
+  globalThis.resetExploredAreaMemory=resetExploredAreaMemory;
+
+  function ensureFogExploreState(){
+    const nextW=Math.max(1,Math.ceil(worldWidth/fogExploreState.cellSize));
+    const nextH=Math.max(1,Math.ceil(worldHeight/fogExploreState.cellSize));
+
+    if(
+      fogExploreState.gridW===nextW&&
+      fogExploreState.gridH===nextH&&
+      fogExploreState.cells.length===nextW*nextH&&
+      fogExploreState.worldMask.width===Math.max(1,Math.ceil(worldWidth))&&
+      fogExploreState.worldMask.height===Math.max(1,Math.ceil(worldHeight))
+    )return;
+
+    fogExploreState.gridW=nextW;
+    fogExploreState.gridH=nextH;
+    fogExploreState.cells=new Uint8Array(nextW*nextH);
+    fogExploreState.worldMask.width=Math.max(1,Math.ceil(worldWidth));
+    fogExploreState.worldMask.height=Math.max(1,Math.ceil(worldHeight));
+    fogExploreState.worldCtx.clearRect(
+      0,
+      0,
+      fogExploreState.worldMask.width,
+      fogExploreState.worldMask.height
+    );
+
+    villageVisionState.worldMask.width=fogExploreState.worldMask.width;
+    villageVisionState.worldMask.height=fogExploreState.worldMask.height;
+    activeVisionState.worldMask.width=fogExploreState.worldMask.width;
+    activeVisionState.worldMask.height=fogExploreState.worldMask.height;
+  }
+
+  function fogExploreIndex(gx,gy){
+    return gy*fogExploreState.gridW+gx;
+  }
+
+  function markExploredCircle(x,y,radius){
+    const minGX=Math.max(0,Math.floor((x-radius)/fogExploreState.cellSize));
+    const maxGX=Math.min(
+      fogExploreState.gridW-1,
+      Math.ceil((x+radius)/fogExploreState.cellSize)
+    );
+    const minGY=Math.max(0,Math.floor((y-radius)/fogExploreState.cellSize));
+    const maxGY=Math.min(
+      fogExploreState.gridH-1,
+      Math.ceil((y+radius)/fogExploreState.cellSize)
+    );
+
+    for(let gy=minGY;gy<=maxGY;gy++){
+      for(let gx=minGX;gx<=maxGX;gx++){
+        const cx=(gx+.5)*fogExploreState.cellSize;
+        const cy=(gy+.5)*fogExploreState.cellSize;
+        if(Math.hypot(cx-x,cy-y)<=radius){
+          fogExploreState.cells[fogExploreIndex(gx,gy)]=1;
+        }
+      }
+    }
+
+    fogExploreState.worldCtx.fillStyle='rgba(255,255,255,1)';
+    fogExploreState.worldCtx.beginPath();
+    fogExploreState.worldCtx.arc(x,y,radius,0,Math.PI*2);
+    fogExploreState.worldCtx.fill();
+  }
+
+  function updateExploredAreaFromVision(){
+    ensureFogExploreState();
+    ensureVillageVisionMask();
+
+    // Permanente Dorfsicht bleibt dauerhaft als erkundet gespeichert.
+    fogExploreState.worldCtx.drawImage(villageVisionState.worldMask,0,0);
+
+    for(const unit of units){
+      if(unit.dead||unit.faction!==FACTIONS.PLAYER)continue;
+      const radius=(
+        unit.type==='cavalry'?92:
+        unit.type==='captain'?88:
+        unit.type==='archer'?78:70
+      )*biomeVisionAt(unit.x,unit.y);
+      markExploredCircle(unit.x,unit.y,radius);
+    }
+  }
+
+  function isExploredByPlayerArea(x,y){
+    if(!fogEnabled)return true;
+    ensureFogExploreState();
+
+    const gx=Math.max(
+      0,
+      Math.min(
+        fogExploreState.gridW-1,
+        Math.floor(x/fogExploreState.cellSize)
+      )
+    );
+    const gy=Math.max(
+      0,
+      Math.min(
+        fogExploreState.gridH-1,
+        Math.floor(y/fogExploreState.cellSize)
+      )
+    );
+
+    return Boolean(
+      fogExploreState.cells[fogExploreIndex(gx,gy)]||
+      isCurrentlyVisibleToPlayer(x,y)
+    );
+  }
+  globalThis.isExploredByPlayerArea=isExploredByPlayerArea;
+
+  function territoryFactions(){
+    return [FACTIONS.PLAYER,FACTIONS.AI];
+  }
+
+  function territorySignature(){
+    const parts=[String(worldWidth),String(worldHeight),String(villages.length)];
+    for(const village of villages){
+      parts.push(
+        `${village.id}:${village.owner}:${Math.round(village.x)}:${Math.round(village.y)}`
+      );
+    }
+    return parts.join('|');
+  }
+
+  function territoryIndex(x,y){
+    return y*territoryState.gridW+x;
+  }
+
+  function nearestVillage(x,y){
+    let bestVillage=null;
+    let bestDist=Infinity;
+
+    for(const village of villages){
+      const dx=village.x-x;
+      const dy=village.y-y;
+      const dist=dx*dx+dy*dy;
+      if(dist<bestDist){
+        bestDist=dist;
+        bestVillage=village;
+      }
+    }
+
+    return bestVillage;
+  }
+
+  function towerVisibilityRadiusFactor(level){
+    const normalized=Math.max(0,Math.floor(Number(level)||0));
+    if(normalized>=4)return TOWER_VISIBILITY_RADIUS_FACTOR[4];
+    return TOWER_VISIBILITY_RADIUS_FACTOR[normalized]||TOWER_VISIBILITY_RADIUS_FACTOR[0];
+  }
+
+  function villageTowerLevel(village){
+    if(typeof globalThis.defenseLevel==='function'){
+      return Math.max(0,Math.floor(Number(globalThis.defenseLevel(village,'tower'))||0));
+    }
+    return Math.max(0,Math.floor(Number(village?.defenseBuildings?.tower)||0));
+  }
+
+  function villageVisionSignature(){
+    const parts=[territoryState.signature];
+    for(const village of villages){
+      parts.push(`${village.id}:${village.owner}:${villageTowerLevel(village)}`);
+    }
+    return parts.join('|');
+  }
+
+  function appendBoundarySegment(edges,x1,y1,x2,y2){
+    edges.push({x1,y1,x2,y2});
+  }
+
+  function buildBoundaryLoops(edges){
+    const loops=[];
+    const adjacency=new Map();
+    const used=new Array(edges.length).fill(false);
+
+    const key=(x,y)=>`${x},${y}`;
+    const register=(point,index)=>{
+      if(!adjacency.has(point))adjacency.set(point,[]);
+      adjacency.get(point).push(index);
+    };
+
+    edges.forEach((edge,index)=>{
+      register(key(edge.x1,edge.y1),index);
+      register(key(edge.x2,edge.y2),index);
+    });
+
+    for(let startIndex=0;startIndex<edges.length;startIndex++){
+      if(used[startIndex])continue;
+
+      const startEdge=edges[startIndex];
+      used[startIndex]=true;
+      const startPoint={x:startEdge.x1,y:startEdge.y1};
+      let currentPoint={x:startEdge.x2,y:startEdge.y2};
+      const points=[startPoint,currentPoint];
+
+      while(true){
+        const candidates=adjacency.get(key(currentPoint.x,currentPoint.y))||[];
+        let nextIndex=-1;
+
+        for(const candidate of candidates){
+          if(!used[candidate]){
+            nextIndex=candidate;
+            break;
+          }
+        }
+
+        if(nextIndex<0)break;
+        used[nextIndex]=true;
+
+        const edge=edges[nextIndex];
+        const nextPoint=
+          edge.x1===currentPoint.x&&edge.y1===currentPoint.y
+            ? {x:edge.x2,y:edge.y2}
+            : {x:edge.x1,y:edge.y1};
+
+        currentPoint=nextPoint;
+        points.push(currentPoint);
+
+        if(
+          currentPoint.x===startPoint.x&&
+          currentPoint.y===startPoint.y
+        )break;
+      }
+
+      if(points.length>=4)loops.push(points);
+    }
+
+    return loops;
+  }
+
+  function boundaryJitter(point,faction){
+    const seed=(point.x*12.9898+point.y*78.233+faction.length*37.11)*0.001;
+    const noise=Math.sin(seed*43758.5453);
+    return (noise-Math.floor(noise)-.5)*territoryState.cellSize*.38;
+  }
+
+  function smoothLoop(loop,faction){
+    return loop.map((point,index)=>{
+      if(index===0||index===loop.length-1)return point;
+      const jx=boundaryJitter(point,faction);
+      const jy=boundaryJitter({x:point.y,y:point.x},faction);
+      return {x:point.x+jx,y:point.y+jy};
+    });
+  }
+
+  function rebuildTerritories(){
+    territoryState.gridW=Math.max(1,Math.ceil(worldWidth/territoryState.cellSize));
+    territoryState.gridH=Math.max(1,Math.ceil(worldHeight/territoryState.cellSize));
+    territoryState.ownerGrid=new Array(territoryState.gridW*territoryState.gridH);
+    territoryState.villageGrid=new Array(territoryState.gridW*territoryState.gridH);
+    territoryState.villageCellIndices=new Map();
+    territoryState.villageTerritoryRadius=new Map();
+    territoryState.factionMasks.clear();
+    territoryState.borderPaths.clear();
+
+    for(let gy=0;gy<territoryState.gridH;gy++){
+      for(let gx=0;gx<territoryState.gridW;gx++){
+        const x=(gx+.5)*territoryState.cellSize;
+        const y=(gy+.5)*territoryState.cellSize;
+        const village=nearestVillage(x,y);
+        const index=territoryIndex(gx,gy);
+        territoryState.ownerGrid[index]=village?village.owner:FACTIONS.NEUTRAL;
+        territoryState.villageGrid[index]=village?.id||null;
+
+        if(!village)continue;
+        if(!territoryState.villageCellIndices.has(village.id)){
+          territoryState.villageCellIndices.set(village.id,[]);
+        }
+        territoryState.villageCellIndices.get(village.id).push(index);
+
+        const dist=Math.hypot(x-village.x,y-village.y);
+        const prevRadius=territoryState.villageTerritoryRadius.get(village.id)||0;
+        if(dist>prevRadius){
+          territoryState.villageTerritoryRadius.set(village.id,dist);
+        }
+      }
+    }
+
+    for(const faction of territoryFactions()){
+      const mask=document.createElement('canvas');
+      mask.width=Math.max(1,Math.ceil(worldWidth));
+      mask.height=Math.max(1,Math.ceil(worldHeight));
+      const maskCtx=mask.getContext('2d');
+      maskCtx.clearRect(0,0,mask.width,mask.height);
+      maskCtx.fillStyle=factionPrimaryColor(faction);
+
+      const edges=[];
+
+      for(let gy=0;gy<territoryState.gridH;gy++){
+        for(let gx=0;gx<territoryState.gridW;gx++){
+          if(territoryState.ownerGrid[territoryIndex(gx,gy)]!==faction)continue;
+
+          const x=gx*territoryState.cellSize;
+          const y=gy*territoryState.cellSize;
+          maskCtx.fillRect(
+            x,
+            y,
+            territoryState.cellSize+1,
+            territoryState.cellSize+1
+          );
+
+          const leftOwner=gx>0
+            ? territoryState.ownerGrid[territoryIndex(gx-1,gy)]
+            : null;
+          const rightOwner=gx<territoryState.gridW-1
+            ? territoryState.ownerGrid[territoryIndex(gx+1,gy)]
+            : null;
+          const topOwner=gy>0
+            ? territoryState.ownerGrid[territoryIndex(gx,gy-1)]
+            : null;
+          const bottomOwner=gy<territoryState.gridH-1
+            ? territoryState.ownerGrid[territoryIndex(gx,gy+1)]
+            : null;
+
+          if(leftOwner!==faction){
+            appendBoundarySegment(
+              edges,
+              x,
+              y,
+              x,
+              y+territoryState.cellSize
+            );
+          }
+          if(rightOwner!==faction){
+            appendBoundarySegment(
+              edges,
+              x+territoryState.cellSize,
+              y,
+              x+territoryState.cellSize,
+              y+territoryState.cellSize
+            );
+          }
+          if(topOwner!==faction){
+            appendBoundarySegment(
+              edges,
+              x,
+              y,
+              x+territoryState.cellSize,
+              y
+            );
+          }
+          if(bottomOwner!==faction){
+            appendBoundarySegment(
+              edges,
+              x,
+              y+territoryState.cellSize,
+              x+territoryState.cellSize,
+              y+territoryState.cellSize
+            );
+          }
+        }
+      }
+
+      const loops=buildBoundaryLoops(edges).map(loop=>smoothLoop(loop,faction));
+      territoryState.factionMasks.set(faction,mask);
+      territoryState.borderPaths.set(faction,loops);
+    }
+
+    villageVisionState.signature='';
+  }
+
+  function ensureTerritories(){
+    const signature=territorySignature();
+    if(signature===territoryState.signature)return;
+    territoryState.signature=signature;
+    rebuildTerritories();
+  }
+
+  function rebuildVillageVisionMask(){
+    ensureFogExploreState();
+    ensureTerritories();
+
+    villageVisionState.worldCtx.clearRect(
+      0,
+      0,
+      villageVisionState.worldMask.width,
+      villageVisionState.worldMask.height
+    );
+    villageVisionState.worldCtx.fillStyle='rgba(255,255,255,1)';
+
+    for(const village of villages){
+      if(village.owner!==FACTIONS.PLAYER)continue;
+
+      const cellIndices=territoryState.villageCellIndices.get(village.id);
+      if(!cellIndices?.length)continue;
+
+      const territorialRadius=territoryState.villageTerritoryRadius.get(village.id)||0;
+      const level=villageTowerLevel(village);
+      const visibleRadius=territorialRadius*towerVisibilityRadiusFactor(level);
+      const visibleRadiusSq=visibleRadius*visibleRadius;
+
+      for(const index of cellIndices){
+        const gx=index%territoryState.gridW;
+        const gy=Math.floor(index/territoryState.gridW);
+        const cx=(gx+.5)*territoryState.cellSize;
+        const cy=(gy+.5)*territoryState.cellSize;
+        const dx=cx-village.x;
+        const dy=cy-village.y;
+        if(dx*dx+dy*dy>visibleRadiusSq)continue;
+
+        villageVisionState.worldCtx.fillRect(
+          gx*territoryState.cellSize,
+          gy*territoryState.cellSize,
+          territoryState.cellSize+1,
+          territoryState.cellSize+1
+        );
+
+        const worldCellX=gx*territoryState.cellSize;
+        const worldCellY=gy*territoryState.cellSize;
+        const minExploreGX=Math.max(
+          0,
+          Math.floor(worldCellX/fogExploreState.cellSize)
+        );
+        const maxExploreGX=Math.min(
+          fogExploreState.gridW-1,
+          Math.floor((worldCellX+territoryState.cellSize)/fogExploreState.cellSize)
+        );
+        const minExploreGY=Math.max(
+          0,
+          Math.floor(worldCellY/fogExploreState.cellSize)
+        );
+        const maxExploreGY=Math.min(
+          fogExploreState.gridH-1,
+          Math.floor((worldCellY+territoryState.cellSize)/fogExploreState.cellSize)
+        );
+
+        for(let eY=minExploreGY;eY<=maxExploreGY;eY++){
+          for(let eX=minExploreGX;eX<=maxExploreGX;eX++){
+            fogExploreState.cells[fogExploreIndex(eX,eY)]=1;
+          }
+        }
+      }
+    }
+  }
+
+  function ensureVillageVisionMask(){
+    const signature=villageVisionSignature();
+    if(signature===villageVisionState.signature)return;
+    villageVisionState.signature=signature;
+    rebuildVillageVisionMask();
+
+    // Permanente Dorfsicht zählt als dauerhaft erkundet.
+    fogExploreState.worldCtx.drawImage(villageVisionState.worldMask,0,0);
+  }
+
+  function villageKnownToPlayer(village){
+    return Boolean(village&&(
+      village.owner===FACTIONS.PLAYER||
+      exploredPlayer.has(village.id)||
+      isCurrentlyVisibleToPlayer(village.x,village.y)
+    ));
+  }
+
+  function territoryKnownToPlayerAt(x,y){
+    return isExploredByPlayerArea(x,y);
+  }
+
+  function villageOwnsTerritoryPoint(villageId,x,y){
+    ensureTerritories();
+    const gx=Math.max(
+      0,
+      Math.min(
+        territoryState.gridW-1,
+        Math.floor(x/territoryState.cellSize)
+      )
+    );
+    const gy=Math.max(
+      0,
+      Math.min(
+        territoryState.gridH-1,
+        Math.floor(y/territoryState.cellSize)
+      )
+    );
+    return territoryState.villageGrid[territoryIndex(gx,gy)]===villageId;
+  }
+
+  function isVisibleFromVillageTerritory(village,x,y){
+    if(!village||village.owner!==FACTIONS.PLAYER)return false;
+    if(!villageOwnsTerritoryPoint(village.id,x,y))return false;
+
+    const territorialRadius=territoryState.villageTerritoryRadius.get(village.id)||0;
+    const level=villageTowerLevel(village);
+    const visibleRadius=territorialRadius*towerVisibilityRadiusFactor(level);
+    return Math.hypot(x-village.x,y-village.y)<=visibleRadius;
+  }
+
+  function isPlayerActiveVisibleArea(x,y){
+    if(!fogEnabled)return true;
+    ensureTerritories();
+
+    for(const village of villages){
+      if(isVisibleFromVillageTerritory(village,x,y))return true;
+    }
+
+    for(const unit of units){
+      if(unit.dead||unit.faction!==FACTIONS.PLAYER)continue;
+      const radius=(
+        unit.type==='cavalry'?92:
+        unit.type==='captain'?88:
+        unit.type==='archer'?78:70
+      )*biomeVisionAt(unit.x,unit.y);
+      if(Math.hypot(x-unit.x,y-unit.y)<=radius)return true;
+    }
+
+    return false;
+  }
+  globalThis.isPlayerActiveVisibleArea=isPlayerActiveVisibleArea;
+
+  function drawTerritoryFillOnMinimap(){
+    ensureTerritories();
+    const map=minimapScale();
+    const cellPx=Math.max(.75,territoryState.cellSize*map.scale);
+
+    minimapCtx.save();
+    minimapCtx.beginPath();
+    minimapCtx.rect(map.offsetX,map.offsetY,map.drawWidth,map.drawHeight);
+    minimapCtx.clip();
+
+    for(let gy=0;gy<territoryState.gridH;gy++){
+      for(let gx=0;gx<territoryState.gridW;gx++){
+        const owner=territoryState.ownerGrid[territoryIndex(gx,gy)];
+        if(owner===FACTIONS.NEUTRAL)continue;
+
+        const worldX=(gx+.5)*territoryState.cellSize;
+        const worldY=(gy+.5)*territoryState.cellSize;
+        const known=
+          owner===FACTIONS.PLAYER||
+          territoryKnownToPlayerAt(worldX,worldY);
+        if(!known)continue;
+
+        const mmX=map.offsetX+gx*territoryState.cellSize*map.scale;
+        const mmY=map.offsetY+gy*territoryState.cellSize*map.scale;
+        minimapCtx.globalAlpha=owner===FACTIONS.PLAYER?.24:.16;
+        minimapCtx.fillStyle=factionPrimaryColor(owner);
+        minimapCtx.fillRect(mmX,mmY,cellPx+1,cellPx+1);
+      }
+    }
+
+    minimapCtx.globalAlpha=1;
+    minimapCtx.lineCap='round';
+    minimapCtx.lineJoin='round';
+
+    for(const faction of territoryFactions()){
+      const loops=territoryState.borderPaths.get(faction)||[];
+      minimapCtx.strokeStyle=factionPrimaryColor(faction);
+      minimapCtx.lineWidth=faction===FACTIONS.PLAYER?1.7:1.2;
+
+      for(const loop of loops){
+        if(loop.length<2)continue;
+        minimapCtx.beginPath();
+        let started=false;
+
+        for(let i=1;i<loop.length;i++){
+          const prev=loop[i-1];
+          const point=loop[i];
+          const mx=(prev.x+point.x)/2;
+          const my=(prev.y+point.y)/2;
+          const segmentKnown=
+            faction===FACTIONS.PLAYER||
+            territoryKnownToPlayerAt(mx,my);
+
+          if(!segmentKnown){
+            if(started){
+              minimapCtx.stroke();
+              minimapCtx.beginPath();
+              started=false;
+            }
+            continue;
+          }
+
+          const pPrev=worldToMinimap(prev.x,prev.y);
+          const p=worldToMinimap(point.x,point.y);
+          if(!started){
+            minimapCtx.moveTo(pPrev.x,pPrev.y);
+            started=true;
+          }
+          minimapCtx.lineTo(p.x,p.y);
+        }
+
+        if(started)minimapCtx.stroke();
+      }
+    }
+
+    minimapCtx.restore();
+  }
+
+  function cutTerritoryIntoFog(faction){
+    const mask=territoryState.factionMasks.get(faction);
+    if(!mask)return;
+
+    fogCtx.save();
+    fogCtx.translate(canvas.width/2,canvas.height/2);
+    fogCtx.scale(camera.zoom,camera.zoom);
+    fogCtx.translate(-camera.x,-camera.y);
+    fogCtx.filter='blur(6px)';
+    fogCtx.drawImage(mask,0,0);
+    fogCtx.filter='none';
+    fogCtx.restore();
+  }
+
+  function drawMaskProjectedToScreen(context,maskCanvas,blur=0){
+    context.save();
+    context.translate(canvas.width/2,canvas.height/2);
+    context.scale(camera.zoom,camera.zoom);
+    context.translate(-camera.x,-camera.y);
+    if(blur>0)context.filter=`blur(${blur}px)`;
+    context.drawImage(maskCanvas,0,0);
+    if(blur>0)context.filter='none';
+    context.restore();
+  }
+
+  function drawActiveVisionMaskOn(context){
+    context.save();
+    context.setTransform(1,0,0,1,0,0);
+
+    // Permanente Dorfsicht auf Basis Turmstufe + Dorfterritorium.
+    drawMaskProjectedToScreen(context,villageVisionState.worldMask,2.2);
+
+    // Einheiten erzeugen zusaetzliche temporaere Sicht außerhalb permanenter Dorfsicht.
+    for(const unit of units){
+      if(unit.dead||unit.faction!==FACTIONS.PLAYER)continue;
+      const screen=worldToScreen(unit.x,unit.y);
+      const radius=(
+        unit.type==='cavalry'?92:
+        unit.type==='captain'?88:
+        unit.type==='archer'?78:70
+      )*biomeVisionAt(unit.x,unit.y)*camera.zoom;
+      const gradient=context.createRadialGradient(
+        screen.x,screen.y,Math.max(1,radius*.58),
+        screen.x,screen.y,radius
+      );
+      gradient.addColorStop(0,'rgba(0,0,0,1)');
+      gradient.addColorStop(.86,'rgba(0,0,0,.96)');
+      gradient.addColorStop(1,'rgba(0,0,0,0)');
+      context.fillStyle=gradient;
+      context.beginPath();
+      context.arc(screen.x,screen.y,radius,0,Math.PI*2);
+      context.fill();
+    }
+
+    context.restore();
+  }
+
+  function drawFactionTerritoryBorders(){
+    ensureTerritories();
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.lineCap='round';
+    ctx.lineJoin='round';
+
+    for(const faction of territoryFactions()){
+      const loops=territoryState.borderPaths.get(faction)||[];
+      if(!loops.length)continue;
+
+      const color=factionPrimaryColor(faction);
+      const mainWidth=faction===FACTIONS.PLAYER?Math.max(3.8,5.4*camera.zoom):Math.max(2.1,3.1*camera.zoom);
+
+      ctx.strokeStyle=color;
+      ctx.lineWidth=mainWidth;
+      ctx.globalAlpha=faction===FACTIONS.PLAYER?.95:.66;
+      ctx.shadowColor=color;
+      ctx.shadowBlur=faction===FACTIONS.PLAYER?11:6;
+      ctx.shadowOffsetX=0;
+      ctx.shadowOffsetY=0;
+
+      for(const loop of loops){
+        if(loop.length<2)continue;
+        let started=false;
+        for(let i=1;i<loop.length;i++){
+          const prevWorld=loop[i-1];
+          const pointWorld=loop[i];
+          const mxWorld=(prevWorld.x+pointWorld.x)/2;
+          const myWorld=(prevWorld.y+pointWorld.y)/2;
+          const visible=
+            faction===FACTIONS.PLAYER||
+            territoryKnownToPlayerAt(mxWorld,myWorld);
+
+          if(!visible){
+            if(started){
+              ctx.stroke();
+              started=false;
+            }
+            continue;
+          }
+
+          const prev=worldToScreen(prevWorld.x,prevWorld.y);
+          const point=worldToScreen(pointWorld.x,pointWorld.y);
+          const mx=(prev.x+point.x)/2;
+          const my=(prev.y+point.y)/2;
+
+          if(!started){
+            ctx.beginPath();
+            ctx.moveTo(prev.x,prev.y);
+            started=true;
+          }
+          ctx.quadraticCurveTo(prev.x,prev.y,mx,my);
+        }
+        if(started)ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  }
+
   const clonePlain=value=>{try{return structuredClone(value);}catch(_){try{return JSON.parse(JSON.stringify(value));}catch(__){return value;}}};
   function rememberVillage(v){villageIntel.set(v.id,{owner:v.owner,tier:v.tier,isCapital:Boolean(v.isCapital),hp:Number(v.hp)||0,garrison:clonePlain(v.garrison||{}),garrisonHp:clonePlain(v.garrisonHp||{}),buildings:clonePlain(v.buildings||{}),walls:clonePlain(v.walls||{}),towers:clonePlain(v.towers||{}),economy:v.economy,economyLevel:v.economyLevel,name:v.name,lastSeen:worldTime});}
   function visibleVillageState(v){
@@ -22797,16 +23574,55 @@ Vorherige v18.48 Stabilitätsphase:
     const baseDrawFormationIndicator=drawFormationIndicator;
     drawFormationIndicator=function(u){if(fogEnabled&&u.faction!==FACTIONS.PLAYER&&!isCurrentlyVisibleToPlayer(u.x,u.y))return;return baseDrawFormationIndicator(u);};
   }
+  const baseDrawMinimap=drawMinimap;
+  drawMinimap=function(){
+    baseDrawMinimap();
+    drawTerritoryFillOnMinimap();
+  };
+
   const baseDrawFog=drawFog;
   drawFog=function(){
-    baseDrawFog();if(!fogEnabled)return;
-    fogCtx.setTransform(1,0,0,1,0,0);fogCtx.clearRect(0,0,fogCanvas.width,fogCanvas.height);fogCtx.fillStyle='rgba(3,5,3,.985)';fogCtx.fillRect(0,0,fogCanvas.width,fogCanvas.height);fogCtx.globalCompositeOperation='destination-out';
-    const cut=(x,y,r)=>{const screen=worldToScreen(x,y);const g=fogCtx.createRadialGradient(screen.x,screen.y,r*.72,screen.x,screen.y,r);g.addColorStop(0,'rgba(0,0,0,1)');g.addColorStop(.84,'rgba(0,0,0,.98)');g.addColorStop(1,'rgba(0,0,0,0)');fogCtx.fillStyle=g;fogCtx.beginPath();fogCtx.arc(screen.x,screen.y,r,0,Math.PI*2);fogCtx.fill();};
-    for(const v of villages){if(v.owner!==FACTIONS.PLAYER)continue;const radius=(v.tier===0?105:v.tier===1?125:v.tier===2?145:165)*biomeVisionAt(v.x,v.y)*camera.zoom;cut(v.x,v.y,radius);}
-    for(const u of units){if(u.dead||u.faction!==FACTIONS.PLAYER)continue;const radius=(u.type==='cavalry'?92:u.type==='captain'?88:u.type==='archer'?78:70)*biomeVisionAt(u.x,u.y)*camera.zoom;cut(u.x,u.y,radius);}
-    fogCtx.globalCompositeOperation='source-over';ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(fogCanvas,0,0);ctx.restore();
+    if(!fogEnabled)return baseDrawFog();
+    ensureTerritories();
+    ensureVillageVisionMask();
+    updateExploredAreaFromVision();
+
+    fogCtx.setTransform(1,0,0,1,0,0);
+    fogCtx.clearRect(0,0,fogCanvas.width,fogCanvas.height);
+    // Zustand 1: Unerforscht = komplett schwarz.
+    fogCtx.fillStyle='rgba(3,5,3,.985)';
+    fogCtx.fillRect(0,0,fogCanvas.width,fogCanvas.height);
+
+    // Bereits erkundete Gebiete aus dem schwarzen Nebel freischneiden.
+    fogCtx.globalCompositeOperation='destination-out';
+    drawMaskProjectedToScreen(fogCtx,fogExploreState.worldMask,3.8);
+    fogCtx.globalCompositeOperation='source-over';
+
+    // Zustand 2: Erkundet = grauer Nebel.
+    shroudCtx.setTransform(1,0,0,1,0,0);
+    shroudCtx.clearRect(0,0,shroudCanvas.width,shroudCanvas.height);
+    shroudCtx.fillStyle='rgba(52,59,56,.44)';
+    shroudCtx.fillRect(0,0,shroudCanvas.width,shroudCanvas.height);
+    shroudCtx.globalCompositeOperation='destination-in';
+    drawMaskProjectedToScreen(shroudCtx,fogExploreState.worldMask,2.6);
+
+    // Zustand 3: Aktive Sicht = voll sichtbar (grauen Nebel entfernen).
+    shroudCtx.globalCompositeOperation='destination-out';
+    drawActiveVisionMaskOn(shroudCtx);
+    shroudCtx.globalCompositeOperation='source-over';
+
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.drawImage(fogCanvas,0,0);
+    ctx.drawImage(shroudCanvas,0,0);
+    ctx.restore();
+
+    drawFactionTerritoryBorders();
   };
-  window.DorfkriegFogIntel=()=>({knownVillages:[...villageIntel.entries()].map(([id,data])=>({id,owner:data.owner,tier:data.tier,lastSeen:data.lastSeen}))});
+  window.DorfkriegFogIntel=()=>({
+    knownVillages:[...villageIntel.entries()].map(([id,data])=>({id,owner:data.owner,tier:data.tier,lastSeen:data.lastSeen})),
+    territorySignature:territoryState.signature
+  });
 })();
 </script>
 
@@ -22815,10 +23631,82 @@ Vorherige v18.48 Stabilitätsphase:
 .fog-frontier-note{display:none}
 </style>
 <script>
-/* v18.57 – Frontier-Nebel: Ziele erkennbar, aktuelle Feindinformationen verborgen */
+/* v20.1 – Frontier-Helfer ohne Kreis-Markierungen */
 (function(){
   'use strict';
   const previousDrawFog=drawFog;
+
+  function currentTargetOrigin(){
+    if(pendingRouteEditor){
+      return getVillage(
+        pendingRouteEditor.originId||
+        pendingRouteEditor.villageId||
+        pendingRouteEditor.id
+      )||null;
+    }
+    if(pendingArmyOrder){
+      return getVillage(pendingArmyOrder.originId)||null;
+    }
+    return null;
+  }
+
+  function activeTargetCandidates(){
+    const origin=currentTargetOrigin();
+    if(!origin)return [];
+    return getConnected(origin).filter(Boolean);
+  }
+
+  function canSelectAsCurrentTarget(origin,target){
+    if(!origin||!target)return false;
+    if(pendingRouteEditor)return routeSegmentIsValid(origin.id,target.id);
+    if(pendingArmyOrder)return true;
+    return false;
+  }
+
+  function drawRouteTargetMarkersOverFog(){
+    const origin=currentTargetOrigin();
+    if(!origin||!fogEnabled)return;
+
+    const candidates=activeTargetCandidates().filter(target=>
+      canSelectAsCurrentTarget(origin,target)
+    );
+    if(!candidates.length)return;
+
+    ctx.save();
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+
+    for(const target of candidates){
+      const visible=isCurrentlyVisibleToPlayer(target.x,target.y);
+      const explored=exploredPlayer.has(target.id);
+      const screen=worldToScreen(target.x,target.y);
+
+      if(
+        screen.x<-90||screen.x>canvas.width+90||
+        screen.y<-90||screen.y>canvas.height+90
+      )continue;
+
+      const radius=Math.max(13,Math.min(20,15*camera.zoom));
+      ctx.globalAlpha=visible?.94:(explored?.72:.52);
+      ctx.fillStyle='rgba(189,164,95,.20)';
+      ctx.strokeStyle='rgba(244,213,126,.88)';
+      ctx.lineWidth=2.2;
+      ctx.setLineDash(explored?[]:[4,4]);
+      ctx.beginPath();
+      ctx.arc(screen.x,screen.y,radius,0,Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.globalAlpha=visible?.96:(explored?.83:.64);
+      ctx.fillStyle='rgba(255,233,170,.96)';
+      ctx.font='bold 14px system-ui';
+      ctx.fillText('◎',screen.x,screen.y);
+    }
+
+    ctx.restore();
+  }
 
   function playerFrontierVillageIds(){
     const ids=new Set();
@@ -22831,78 +23719,9 @@ Vorherige v18.48 Stabilitätsphase:
     return ids;
   }
 
-  function routeOrigin(){
-    if(!pendingRouteEditor)return null;
-    return getVillage(pendingRouteEditor.originId||pendingRouteEditor.villageId||pendingRouteEditor.id)||
-      getVillage(pendingRouteEditor.origin?.id)||null;
-  }
-
-  function isValidActiveTarget(village){
-    const origin=routeOrigin();
-    if(origin)return routeSegmentIsValid(origin.id,village.id);
-    if(pendingArmyRetargetId||pendingArmyOrder)return true;
-    return false;
-  }
-
-  function drawFrontierMarkers(){
-    if(!fogEnabled)return;
-    const frontier=playerFrontierVillageIds();
-    const routeActive=Boolean(pendingRouteEditor||pendingArmyRetargetId||pendingArmyOrder);
-
-    ctx.save();
-    ctx.setTransform(1,0,0,1,0,0);
-    ctx.textAlign='center';
-    ctx.textBaseline='middle';
-
-    for(const village of villages){
-      if(village.owner===FACTIONS.PLAYER)continue;
-      const explored=exploredPlayer.has(village.id);
-      const adjacent=frontier.has(village.id);
-      if(!explored&&!adjacent)continue;
-      if(isCurrentlyVisibleToPlayer(village.x,village.y))continue;
-
-      const p=worldToScreen(village.x,village.y);
-      if(p.x<-80||p.x>canvas.width+80||p.y<-80||p.y>canvas.height+80)continue;
-
-      const valid=routeActive&&isValidActiveTarget(village);
-      const radius=Math.max(16,Math.min(24,18*camera.zoom));
-
-      ctx.globalAlpha=valid?.95:(adjacent?.68:.42);
-      ctx.fillStyle=valid?'rgba(209,176,86,.24)':'rgba(135,151,128,.16)';
-      ctx.strokeStyle=valid?'#efd06f':'rgba(191,207,183,.72)';
-      ctx.lineWidth=valid?3:1.6;
-      ctx.setLineDash(explored?[]:[5,4]);
-      ctx.beginPath();
-      ctx.arc(p.x,p.y,radius,0,Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      ctx.fillStyle=valid?'#ffe7a0':'#c9d3c4';
-      ctx.font=`bold ${valid?17:15}px system-ui`;
-      ctx.fillText(valid?'⚔':'⌂',p.x,p.y-1);
-
-      ctx.globalAlpha=valid?1:.78;
-      ctx.font='bold 11px system-ui';
-      ctx.lineWidth=3.5;
-      ctx.strokeStyle='rgba(0,0,0,.92)';
-      ctx.strokeText(village.name,p.x,p.y+radius+12);
-      ctx.fillStyle=valid?'#ffe8a8':'#d7dfd2';
-      ctx.fillText(village.name,p.x,p.y+radius+12);
-
-      ctx.globalAlpha=.72;
-      ctx.font='9px system-ui';
-      const subtitle=valid?'antippen als Ziel':(explored?'zuletzt erkundet':'angrenzendes Dorf');
-      ctx.strokeText(subtitle,p.x,p.y+radius+24);
-      ctx.fillStyle='#b8c3b3';
-      ctx.fillText(subtitle,p.x,p.y+radius+24);
-    }
-    ctx.restore();
-  }
-
   drawFog=function(){
     previousDrawFog();
-    drawFrontierMarkers();
+    drawRouteTargetMarkersOverFog();
   };
 
   window.DorfkriegFrontierFog=()=>({

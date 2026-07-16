@@ -4301,6 +4301,120 @@ body.game-started .in-game-guide-btn { display: flex; }
   .guide-section p { font-size: .69rem; }
 }
 
+/* Phase 2.8: Gemeinsame Fraktionsstatusleiste ersetzt Spieler-/KI-Boxen. */
+#togglePlayer,
+#toggleAI,
+.player-panel,
+.ai-panel {
+  display: none !important;
+}
+
+.faction-status-panel {
+  top: max(7px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(95vw, 980px);
+  padding: 8px;
+}
+
+.faction-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.faction-status-title {
+  font-size: .74rem;
+  font-weight: 900;
+  color: #ecd9a9;
+  letter-spacing: .03em;
+}
+
+.faction-status-toggle {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: .9rem;
+}
+
+.faction-status-summary {
+  font-size: .66rem;
+  color: #d8c8a7;
+  margin-bottom: 4px;
+}
+
+.faction-status-table-wrap {
+  overflow-x: auto;
+}
+
+.faction-status-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .64rem;
+  min-width: 870px;
+}
+
+.faction-status-table th,
+.faction-status-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(255,255,255,.09);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.faction-status-table th:first-child,
+.faction-status-table td:first-child {
+  text-align: left;
+}
+
+.faction-status-row-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.faction-status-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-weight: 800;
+}
+
+.faction-status-row.defeated {
+  opacity: .56;
+}
+
+.faction-status-row-status {
+  color: #c9b185;
+  font-size: .6rem;
+  margin-left: 6px;
+}
+
+.faction-status-panel.collapsed .faction-status-table-wrap {
+  display: none;
+}
+
+@media (max-width: 430px) {
+  .faction-status-panel {
+    top: max(5px, env(safe-area-inset-top));
+    width: min(97vw, 980px);
+    padding: 6px;
+  }
+
+  .faction-status-title {
+    font-size: .68rem;
+  }
+
+  .faction-status-summary {
+    font-size: .61rem;
+  }
+}
+
 </style>
 
 </head>
@@ -4619,6 +4733,7 @@ body.game-started .in-game-guide-btn { display: flex; }
 
     <button id="toggleAI" class="toggle-panel-btn" aria-label="KI-Anzeige ausblenden">−</button>
     <button id="togglePlayer" class="toggle-panel-btn" aria-label="Spieleranzeige ausblenden">−</button>
+  <button id="toggleFactionStatus" class="toggle-panel-btn" aria-label="Statusübersicht ein- oder ausklappen">⌄</button>
     <button id="toggleControls" class="toggle-panel-btn" aria-label="Steuerung ausblenden">−</button>
     <button id="compactPauseBtn" aria-label="Spiel pausieren">Pause</button>
 
@@ -4653,6 +4768,33 @@ body.game-started .in-game-guide-btn { display: flex; }
         <span class="pill" id="aiTierText">Stufe 1</span>
         <span class="pill" id="aiXpText">XP 0</span>
         <span class="pill" id="aiMoraleText">Moral 70</span>
+      </div>
+    </div>
+
+    <div id="factionStatusPanel" class="panel faction-status-panel collapsed">
+      <div class="faction-status-head">
+        <span class="faction-status-title">Fraktionsübersicht</span>
+        <button id="toggleFactionStatusBtn" class="faction-status-toggle" aria-label="Fraktionsübersicht ein- oder ausklappen">⌄</button>
+      </div>
+      <div id="factionStatusSummary" class="faction-status-summary">Lädt …</div>
+      <div class="faction-status-table-wrap">
+        <table class="faction-status-table">
+          <thead>
+            <tr>
+              <th>Fraktion</th>
+              <th>Volk</th>
+              <th>Gold</th>
+              <th>Holz</th>
+              <th>Stein</th>
+              <th>Dörfer</th>
+              <th>Truppen</th>
+              <th>XP</th>
+              <th>Moral</th>
+              <th>Einkommen</th>
+            </tr>
+          </thead>
+          <tbody id="factionStatusBody"></tbody>
+        </table>
       </div>
     </div>
 
@@ -5712,8 +5854,13 @@ const aiMoraleText = document.getElementById("aiMoraleText");
 
 const togglePlayer = document.getElementById("togglePlayer");
 const toggleAI = document.getElementById("toggleAI");
+const toggleFactionStatus=document.getElementById("toggleFactionStatus");
+const toggleFactionStatusBtn=document.getElementById("toggleFactionStatusBtn");
 const playerPanel = document.querySelector(".player-panel");
 const aiPanel = document.querySelector(".ai-panel");
+const factionStatusPanel=document.getElementById("factionStatusPanel");
+const factionStatusSummary=document.getElementById("factionStatusSummary");
+const factionStatusBody=document.getElementById("factionStatusBody");
 const controlsPanel = document.querySelector(".controls");
 const toggleControls = document.getElementById("toggleControls");
 const compactPauseBtn = document.getElementById("compactPauseBtn");
@@ -5927,11 +6074,59 @@ function configureActiveFactions(aiCount,sizeKey){
       simulationEnabled,
       color:runtimeFactionColor(profile?.color||COLORS[entry.type]||"#b8a98f",entry.id),
       startVillageId,
-      profileKey:isPlayer?playerFaction:aiFaction
+      profileKey:isPlayer
+        ? playerFaction
+        : (previous?.profileKey||aiFaction)
     };
   });
 
   return runtimeActiveFactions;
+}
+
+function seededHash(seed,text){
+  let hash=(normalizeMapSeed(seed)>>>0)^2166136261;
+  const input=String(text||"");
+
+  for(let i=0;i<input.length;i++){
+    hash^=input.charCodeAt(i);
+    hash=Math.imul(hash,16777619);
+  }
+
+  return hash>>>0;
+}
+
+function assignConfiguredAiCivilizations(seed){
+  const civilizationKeys=Object.keys(FACTIONS_DATA);
+  const configuredAi=getRuntimeFactions().filter(faction=>
+    faction.type==="ai"&&faction.configured
+  );
+
+  if(!configuredAi.length||!civilizationKeys.length)return;
+
+  const preferredPool=
+    civilizationKeys.length>configuredAi.length
+      ? civilizationKeys.filter(key=>key!==playerFaction)
+      : civilizationKeys.slice();
+
+  let remaining=(preferredPool.length?preferredPool:civilizationKeys).slice();
+  const assigned=new Map();
+
+  for(const faction of configuredAi){
+    const pool=remaining.length?remaining:civilizationKeys;
+    const index=seededHash(seed,`civilization:${faction.id}`)%pool.length;
+    const selected=pool[index];
+    assigned.set(faction.id,selected);
+
+    const removeIndex=remaining.indexOf(selected);
+    if(removeIndex>=0)remaining.splice(removeIndex,1);
+  }
+
+  runtimeActiveFactions=runtimeActiveFactions.map(faction=>{
+    if(faction.type!=="ai")return faction;
+
+    const profileKey=assigned.get(faction.id)||faction.profileKey||aiFaction;
+    return Object.assign({},faction,{profileKey});
+  });
 }
 
 function refreshRuntimeActiveFactions(){
@@ -6344,15 +6539,20 @@ let aiFaction="empire";
 let fogEnabled=true;
 
 function factionData(faction){
-  if(isPlayerFaction(faction)){
+  const runtimeProfileKey=runtimeFactionById(faction)?.profileKey;
+  if(runtimeProfileKey&&FACTIONS_DATA[runtimeProfileKey]){
+    return FACTIONS_DATA[runtimeProfileKey];
+  }
+
+  if(isPlayerFaction(faction)&&FACTIONS_DATA[playerFaction]){
     return FACTIONS_DATA[playerFaction];
   }
 
-  if(isAiFaction(faction)){
+  if(isAiFaction(faction)&&FACTIONS_DATA[aiFaction]){
     return FACTIONS_DATA[aiFaction];
   }
 
-  return FACTIONS_DATA[aiFaction];
+  return FACTIONS_DATA.kingdom;
 }
 
 function factionBonus(faction,key,fallback=1){
@@ -13854,6 +14054,8 @@ function startConfiguredGame(){
     ? Number(activeMeta.seed)
     : (typeof getCurrentMapSeed==="function"?getCurrentMapSeed():effectiveSeed);
 
+  assignConfiguredAiCivilizations(activeSeed);
+
   if(!Number.isFinite(Number(activeSeed))){
     selectedMapSeedInput=String(effectiveSeed);
   }
@@ -17248,6 +17450,208 @@ function updateFactionUiColors(){
   }
 }
 
+let factionStatusStructureSignature="";
+const factionStatusCellCache=new Map();
+let factionStatusCollapsed=true;
+
+function factionIncomePerMinuteDisplay(factionId){
+  let gold=0;
+  let wood=0;
+  let stone=0;
+
+  for(const village of villages){
+    if(village.owner!==factionId)continue;
+    gold+=villageResourcePerMinute(village,"gold");
+    wood+=villageResourcePerMinute(village,"wood");
+    stone+=villageResourcePerMinute(village,"stone");
+  }
+
+  return {
+    gold:Math.round(gold),
+    wood:Math.round(wood),
+    stone:Math.round(stone)
+  };
+}
+
+function factionStatusDisplayName(faction){
+  if(faction.type==="player")return "Spieler";
+
+  const aiBlueprintOrder=RUNTIME_FACTION_BLUEPRINTS
+    .filter(entry=>entry.type==="ai")
+    .map(entry=>entry.id);
+  const aiIndex=Math.max(0,aiBlueprintOrder.indexOf(faction.id));
+  return `KI ${aiIndex+1}`;
+}
+
+function setFactionStatusCollapsed(nextCollapsed){
+  factionStatusCollapsed=Boolean(nextCollapsed);
+
+  if(factionStatusPanel){
+    factionStatusPanel.classList.toggle("collapsed",factionStatusCollapsed);
+  }
+
+  const symbol=factionStatusCollapsed?"⌄":"⌃";
+
+  if(toggleFactionStatus){
+    toggleFactionStatus.textContent=symbol;
+  }
+  if(toggleFactionStatusBtn){
+    toggleFactionStatusBtn.textContent=symbol;
+  }
+}
+
+function ensureFactionStatusRows(factions){
+  if(!factionStatusBody)return;
+
+  const signature=factions.map(faction=>faction.id).join("|");
+  if(signature===factionStatusStructureSignature)return;
+
+  factionStatusStructureSignature=signature;
+  factionStatusCellCache.clear();
+  factionStatusBody.innerHTML="";
+
+  for(const faction of factions){
+    const row=document.createElement("tr");
+    row.className="faction-status-row";
+    row.dataset.factionId=faction.id;
+
+    const nameCell=document.createElement("td");
+    const civilizationCell=document.createElement("td");
+    const goldCell=document.createElement("td");
+    const woodCell=document.createElement("td");
+    const stoneCell=document.createElement("td");
+    const villagesCell=document.createElement("td");
+    const unitsCell=document.createElement("td");
+    const xpCell=document.createElement("td");
+    const moraleCell=document.createElement("td");
+    const incomeCell=document.createElement("td");
+
+    row.append(
+      nameCell,
+      civilizationCell,
+      goldCell,
+      woodCell,
+      stoneCell,
+      villagesCell,
+      unitsCell,
+      xpCell,
+      moraleCell,
+      incomeCell
+    );
+    factionStatusBody.appendChild(row);
+
+    factionStatusCellCache.set(faction.id,{
+      row,
+      nameCell,
+      civilizationCell,
+      goldCell,
+      woodCell,
+      stoneCell,
+      villagesCell,
+      unitsCell,
+      xpCell,
+      moraleCell,
+      incomeCell,
+      snapshot:new Map()
+    });
+  }
+}
+
+function updateFactionStatusCell(cache,key,value){
+  const previous=cache.snapshot.get(key);
+  if(previous===value)return false;
+  cache.snapshot.set(key,value);
+  return true;
+}
+
+function updateFactionStatusOverview(){
+  const factions=getRuntimeFactions().filter(faction=>
+    faction.initialized===true&&
+    faction.active===true&&
+    (faction.type==="player"||faction.type==="ai")
+  );
+
+  ensureFactionStatusRows(factions);
+
+  let defeatedCount=0;
+
+  for(const faction of factions){
+    const cache=factionStatusCellCache.get(faction.id);
+    if(!cache)continue;
+
+    const resources=factionRes(faction.id)||{gold:0,wood:0,stone:0};
+    const villagesOwned=villages.filter(village=>village.owner===faction.id).length;
+    const unitsOwned=units.filter(unit=>!unit.dead&&unit.faction===faction.id).length;
+    const xp=Math.floor(
+      Object.values(factionUnitProgress(faction.id)).reduce(
+        (sum,progress)=>sum+(progress?.xp||0),
+        0
+      )
+    );
+    const morale=Math.round(factionMorale(faction.id));
+    const civilization=factionData(faction.id);
+    const income=factionIncomePerMinuteDisplay(faction.id);
+    const defeated=faction.type==="ai"&&villagesOwned<=0;
+
+    if(defeated)defeatedCount++;
+
+    const rowLabel=factionStatusDisplayName(faction);
+    const color=factionPrimaryColor(faction.id);
+    const statusSuffix=defeated
+      ? '<span class="faction-status-row-status">Besiegt</span>'
+      : "";
+    const nameHtml=
+      `<span class="faction-status-row-name">`+
+        `<i class="faction-status-row-dot" style="background:${color}"></i>`+
+        `${rowLabel}${statusSuffix}`+
+      `</span>`;
+    const civilizationText=`${civilization.icon} ${civilization.name}`;
+
+    cache.row.classList.toggle("defeated",defeated);
+
+    if(updateFactionStatusCell(cache,"nameHtml",nameHtml)){
+      cache.nameCell.innerHTML=nameHtml;
+    }
+    if(updateFactionStatusCell(cache,"civilization",civilizationText)){
+      cache.civilizationCell.textContent=civilizationText;
+    }
+    if(updateFactionStatusCell(cache,"gold",Math.floor(resources.gold))){
+      cache.goldCell.textContent=String(Math.floor(resources.gold));
+    }
+    if(updateFactionStatusCell(cache,"wood",Math.floor(resources.wood))){
+      cache.woodCell.textContent=String(Math.floor(resources.wood));
+    }
+    if(updateFactionStatusCell(cache,"stone",Math.floor(resources.stone))){
+      cache.stoneCell.textContent=String(Math.floor(resources.stone));
+    }
+    if(updateFactionStatusCell(cache,"villages",villagesOwned)){
+      cache.villagesCell.textContent=String(villagesOwned);
+    }
+    if(updateFactionStatusCell(cache,"units",unitsOwned)){
+      cache.unitsCell.textContent=String(unitsOwned);
+    }
+    if(updateFactionStatusCell(cache,"xp",xp)){
+      cache.xpCell.textContent=String(xp);
+    }
+    if(updateFactionStatusCell(cache,"moral",morale)){
+      cache.moraleCell.textContent=String(morale);
+    }
+
+    const incomeText=`${income.gold}/${income.wood}/${income.stone}`;
+    if(updateFactionStatusCell(cache,"income",incomeText)){
+      cache.incomeCell.textContent=incomeText;
+      cache.incomeCell.title=`Einkommen/Min: Gold ${income.gold}, Holz ${income.wood}, Stein ${income.stone}`;
+    }
+  }
+
+  if(factionStatusSummary){
+    const summary=`${factions.length} Fraktionen aktiv · ${defeatedCount} KI besiegt`;
+    if(factionStatusSummary.textContent!==summary){
+      factionStatusSummary.textContent=summary;
+    }
+  }
+}
+
 
 function factionAverageTier(faction){
   const owned=villages.filter(v=>v.owner===faction);
@@ -17340,6 +17744,7 @@ function updateUi(){
     }
   }
   const enemyData=aggregateEnemyUiData();
+  updateFactionStatusOverview();
   updateCompactStatData(enemyData);
   const pV=villages.filter(v=>v.owner===FACTIONS.PLAYER);
   const aV=villages.filter(v=>enemyData.activeEnemies.some(faction=>faction.id===v.owner));
@@ -20383,26 +20788,41 @@ function toggleStatsExpanded(panel){
 }
 
 function updatePanelButtons(){
-  togglePlayer.textContent=
-    playerPanel.classList.contains("stats-expanded") ? "⌃" : "⌄";
+  if(togglePlayer&&playerPanel){
+    togglePlayer.textContent=
+      playerPanel.classList.contains("stats-expanded") ? "⌃" : "⌄";
+  }
 
-  toggleAI.textContent=
-    aiPanel.classList.contains("stats-expanded") ? "⌃" : "⌄";
+  if(toggleAI&&aiPanel){
+    toggleAI.textContent=
+      aiPanel.classList.contains("stats-expanded") ? "⌃" : "⌄";
+  }
+
+  setFactionStatusCollapsed(factionStatusCollapsed);
 }
 
-togglePlayer.addEventListener("click",()=>{
+togglePlayer?.addEventListener("click",()=>{
+  if(!playerPanel)return;
   playerPanel.classList.toggle("stats-expanded");
   playerPanel.classList.remove("hidden-panel");
   playerPanelVisible=true;
   updatePanelButtons();
 });
 
-toggleAI.addEventListener("click",()=>{
+toggleAI?.addEventListener("click",()=>{
+  if(!aiPanel)return;
   aiPanel.classList.toggle("stats-expanded");
   aiPanel.classList.remove("hidden-panel");
   aiPanelVisible=true;
   updatePanelButtons();
 });
+
+function toggleFactionStatusCollapsed(){
+  setFactionStatusCollapsed(!factionStatusCollapsed);
+}
+
+toggleFactionStatus?.addEventListener("click",toggleFactionStatusCollapsed);
+toggleFactionStatusBtn?.addEventListener("click",toggleFactionStatusCollapsed);
 
 toggleControls.addEventListener("click",()=>{
   controlsVisible = !controlsVisible;

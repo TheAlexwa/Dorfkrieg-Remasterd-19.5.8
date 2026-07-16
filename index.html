@@ -6593,11 +6593,25 @@ function factionPrimaryColor(faction){
 }
 
 function factionSecondaryColor(faction){
-  return factionData(faction)?.secondary || "#e7dcc0";
+  const profile=factionData(faction);
+  const runtimeFaction=runtimeFactionById(faction);
+
+  if(runtimeFaction?.type==="ai"){
+    return profile?.colors?.secondary || profile?.secondary || "#e7dcc0";
+  }
+
+  return profile?.secondary || "#e7dcc0";
 }
 
 function factionDarkColor(faction){
-  return factionData(faction)?.dark || "#2b2218";
+  const profile=factionData(faction);
+  const runtimeFaction=runtimeFactionById(faction);
+
+  if(runtimeFaction?.type==="ai"){
+    return profile?.colors?.dark || profile?.dark || "#2b2218";
+  }
+
+  return profile?.dark || "#2b2218";
 }
 
 

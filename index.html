@@ -4129,6 +4129,60 @@ body.game-started .in-game-guide-btn { display: flex; }
 }
 .guide-card h2 { margin: 0 44px 3px 0; color: #f0d58e; font-size: 1.18rem; }
 .guide-version { color: #cdbb98; font-size: .7rem; font-weight: 900; letter-spacing: .08em; }
+
+    .debug-panel {
+      position: absolute;
+      z-index: 170;
+      right: 10px;
+      bottom: calc(max(10px, env(safe-area-inset-bottom)) + 10px);
+      width: min(260px, 72vw);
+      padding: 9px;
+      border-radius: 12px;
+      border: 1px solid rgba(240,199,94,.35);
+      background: rgba(22,17,12,.94);
+      color: #f0e6cf;
+      box-shadow: 0 12px 28px rgba(0,0,0,.42);
+      display: none;
+      gap: 7px;
+    }
+
+    .debug-panel.open { display: grid; }
+
+    .debug-panel h3 {
+      margin: 0;
+      font-size: .76rem;
+      color: #f2d58d;
+      letter-spacing: .04em;
+    }
+
+    .debug-panel .debug-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 7px;
+      font-size: .67rem;
+    }
+
+    .debug-panel input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #d1ab57;
+    }
+
+    .fps-indicator {
+      position: absolute;
+      z-index: 171;
+      left: 10px;
+      bottom: calc(max(10px, env(safe-area-inset-bottom)) + 10px);
+      padding: 4px 8px;
+      border-radius: 9px;
+      background: rgba(15,12,9,.86);
+      border: 1px solid rgba(255,255,255,.16);
+      color: #e9dcc0;
+      font-size: .66rem;
+      font-weight: 800;
+      display: none;
+    }
 .guide-close {
   position: absolute;
   right: 11px;
@@ -4221,7 +4275,7 @@ body.game-started .in-game-guide-btn { display: flex; }
 
     <div class="start-title">
       <h1>DORFKRIEG</h1>
-      <p>COMMANDER EVOLUTION EDITION · v19.5.8</p>
+      <p id="startVersionText">COMMANDER EVOLUTION EDITION · v19.5.8</p>
     </div>
 
     <div class="start-grid">
@@ -4324,7 +4378,7 @@ body.game-started .in-game-guide-btn { display: flex; }
   <section class="guide-card" role="dialog" aria-modal="true" aria-labelledby="gameGuideTitle">
     <button id="gameGuideClose" class="guide-close" type="button" aria-label="Anleitung schließen">✕</button>
     <h2 id="gameGuideTitle">Anleitung</h2>
-    <div class="guide-version">DORFKRIEG REMASTERED · COMMANDER EVOLUTION EDITION · v20.0</div>
+    <div id="guideVersionText" class="guide-version">DORFKRIEG REMASTERED · COMMANDER EVOLUTION EDITION · v20.0</div>
     <p class="guide-intro">Wähle links beziehungsweise oben einen Bereich. Die sechs Hauptpunkte entsprechen direkt den Reitern des Dorf-Kreismenüs.</p>
     <div class="guide-shell">
       <nav class="guide-nav" aria-label="Anleitungsbereiche">
@@ -4517,7 +4571,18 @@ body.game-started .in-game-guide-btn { display: flex; }
     </div>
 
     <div class="season-box" id="seasonText">Frühling · 90 s</div>
-    <div class="remastered-badge">DORFKRIEG REMASTERED · v20.0</div>
+    <div id="inGameVersionBadge" class="remastered-badge">DORFKRIEG REMASTERED · v20.0</div>
+
+    <div id="debugPanel" class="debug-panel" aria-hidden="true">
+      <h3>Entwickleransicht (F9)</h3>
+      <label class="debug-row"><input data-debug-key="fogOfWar" type="checkbox" checked /><span>Fog of War</span></label>
+      <label class="debug-row"><input data-debug-key="showAi" type="checkbox" checked /><span>KI anzeigen</span></label>
+      <label class="debug-row"><input data-debug-key="showBorders" type="checkbox" checked /><span>Grenzen anzeigen</span></label>
+      <label class="debug-row"><input data-debug-key="showTerritories" type="checkbox" checked /><span>Territorien anzeigen</span></label>
+      <label class="debug-row"><input data-debug-key="showVision" type="checkbox" /><span>Sichtbereiche anzeigen</span></label>
+      <label class="debug-row"><input data-debug-key="showFps" type="checkbox" /><span>FPS anzeigen</span></label>
+    </div>
+    <div id="fpsIndicator" class="fps-indicator" aria-hidden="true">FPS: --</div>
 
     <div class="unit-legend">
       <strong>Einheiten:</strong>
@@ -8028,6 +8093,155 @@ let villages=[], units=[], projectiles=[], roadsState=new Map();
 bridgeRoadStateReady=true;
 refreshBridgeGraphics();
 
+const GAME_VERSION="20.1.0";
+const SAVE_VERSION=1;
+const SAVE_STORAGE_KEY="dorfkrieg_save_v1";
+const DEBUG_STORAGE_KEY="dorfkrieg_debug_flags_v1";
+
+const debugState={
+  panelOpen:false,
+  fogOfWar:true,
+  showAi:true,
+  showBorders:true,
+  showTerritories:true,
+  showVision:false,
+  showFps:false
+};
+
+const debugPanel=document.getElementById("debugPanel");
+const fpsIndicator=document.getElementById("fpsIndicator");
+
+function bindGameVersionLabels(){
+  const startVersionText=document.getElementById("startVersionText");
+  const guideVersionText=document.getElementById("guideVersionText");
+  const inGameVersionBadge=document.getElementById("inGameVersionBadge");
+
+  if(startVersionText){
+    startVersionText.textContent=`COMMANDER EVOLUTION EDITION · v${GAME_VERSION}`;
+  }
+
+  if(guideVersionText){
+    guideVersionText.textContent=`DORFKRIEG REMASTERED · COMMANDER EVOLUTION EDITION · v${GAME_VERSION}`;
+  }
+
+  if(inGameVersionBadge){
+    inGameVersionBadge.textContent=`DORFKRIEG REMASTERED · v${GAME_VERSION}`;
+  }
+}
+
+function migrateSaveData(saveData){
+  if(!saveData||typeof saveData!=="object")return null;
+
+  let migrated=saveData;
+  if(migrated.payload&&typeof migrated.payload==="object"){
+    migrated=Object.assign({},migrated.payload);
+  }
+
+  let fromVersion=Number.isFinite(Number(saveData.saveVersion))
+    ? Number(saveData.saveVersion)
+    : 0;
+
+  if(!Number.isFinite(fromVersion)||fromVersion<0)fromVersion=0;
+
+  if(fromVersion<1){
+    migrated.debugState=Object.assign({},debugState,migrated.debugState||{});
+  }
+
+  migrated.saveVersion=SAVE_VERSION;
+  migrated.gameVersion=GAME_VERSION;
+  return migrated;
+}
+
+function createSaveEnvelope(payload){
+  return {
+    saveVersion:SAVE_VERSION,
+    gameVersion:GAME_VERSION,
+    savedAt:Date.now(),
+    payload
+  };
+}
+
+function getDefaultSaveState(){
+  return {
+    debugState:Object.assign({},debugState)
+  };
+}
+
+function collectSaveState(){
+  return {
+    debugState:Object.assign({},debugState)
+  };
+}
+
+function applySaveState(state){
+  if(!state||typeof state!=="object")return;
+  if(state.debugState&&typeof state.debugState==="object"){
+    Object.assign(debugState,state.debugState);
+  }
+}
+
+function saveGameStateToStorage(){
+  try{
+    const envelope=createSaveEnvelope(collectSaveState());
+    localStorage.setItem(SAVE_STORAGE_KEY,JSON.stringify(envelope));
+  }catch(error){
+    console.warn("Savegame konnte nicht geschrieben werden:",error);
+  }
+}
+
+function loadGameStateFromStorage(){
+  try{
+    const raw=localStorage.getItem(SAVE_STORAGE_KEY);
+    if(!raw)return getDefaultSaveState();
+    const parsed=JSON.parse(raw);
+    return migrateSaveData(parsed)||getDefaultSaveState();
+  }catch(error){
+    console.warn("Savegame konnte nicht gelesen werden:",error);
+    return getDefaultSaveState();
+  }
+}
+
+function persistDebugFlags(){
+  try{
+    localStorage.setItem(DEBUG_STORAGE_KEY,JSON.stringify(debugState));
+  }catch(error){
+    console.warn("Debug-Flags nicht speicherbar:",error);
+  }
+}
+
+function restoreDebugFlags(){
+  try{
+    const raw=localStorage.getItem(DEBUG_STORAGE_KEY);
+    if(!raw)return;
+    const parsed=JSON.parse(raw);
+    if(parsed&&typeof parsed==="object")Object.assign(debugState,parsed);
+  }catch(error){
+    console.warn("Debug-Flags nicht lesbar:",error);
+  }
+}
+
+function syncDebugUi(){
+  if(debugPanel){
+    debugPanel.classList.toggle("open",Boolean(debugState.panelOpen));
+    debugPanel.setAttribute("aria-hidden",debugState.panelOpen?"false":"true");
+    debugPanel.querySelectorAll("input[data-debug-key]").forEach(input=>{
+      const key=input.dataset.debugKey;
+      input.checked=Boolean(debugState[key]);
+    });
+  }
+
+  if(fpsIndicator){
+    const visible=Boolean(debugState.showFps);
+    fpsIndicator.style.display=visible?"block":"none";
+    fpsIndicator.setAttribute("aria-hidden",visible?"false":"true");
+  }
+}
+
+bindGameVersionLabels();
+applySaveState(loadGameStateFromStorage());
+restoreDebugFlags();
+syncDebugUi();
+
 let running=false, gameOver=false, gameSpeed=0.6, lastTime=performance.now(), worldTime=0;
 
 let matchStatistics=null;
@@ -8073,7 +8287,7 @@ function createFactionMatchStatistics(){
 
 function createMatchStatistics(){
   return {
-    version:"16.1a",
+    version:GAME_VERSION,
     startedAt:Date.now(),
     endedAt:null,
     durationSeconds:0,
@@ -18074,10 +18288,25 @@ difficultySelect.onchange=e=>{aiDifficulty=Number(e.target.value);hintText.textC
 
 let lastRuntimeError="";
 let lastRuntimeErrorTime=0;
+let debugFpsAccumulator=0;
+let debugFpsFrames=0;
+let debugFpsLastStamp=performance.now();
 
 function loop(now){
   const dt=Math.min((now-lastTime)/1000,.05);
   lastTime=now;
+
+  if(debugState.showFps&&fpsIndicator){
+    debugFpsAccumulator+=dt;
+    debugFpsFrames+=1;
+    if(now-debugFpsLastStamp>=360){
+      const fps=Math.max(0,Math.round(debugFpsFrames/Math.max(.001,debugFpsAccumulator)));
+      fpsIndicator.textContent=`FPS: ${fps}`;
+      debugFpsAccumulator=0;
+      debugFpsFrames=0;
+      debugFpsLastStamp=now;
+    }
+  }
 
   try{
     if(running&&!gameOver){
@@ -18109,6 +18338,33 @@ safeStartupStep(
 );
 
 requestAnimationFrame(loop);
+
+if(debugPanel){
+  debugPanel.addEventListener("change",event=>{
+    const input=event.target;
+    if(!input||input.type!=="checkbox")return;
+    const key=input.dataset.debugKey;
+    if(!key||!(key in debugState))return;
+    debugState[key]=Boolean(input.checked);
+    syncDebugUi();
+    persistDebugFlags();
+    saveGameStateToStorage();
+  });
+}
+
+document.addEventListener("keydown",event=>{
+  if(event.key!=="F9")return;
+  event.preventDefault();
+  debugState.panelOpen=!debugState.panelOpen;
+  syncDebugUi();
+  persistDebugFlags();
+  saveGameStateToStorage();
+});
+
+window.addEventListener("beforeunload",()=>{
+  saveGameStateToStorage();
+  persistDebugFlags();
+});
 </script>
 
 
@@ -25552,6 +25808,124 @@ console.info('Dorfkrieg v19.5.8: Dorf- und Sonderortziele vereinheitlicht; Karte
   canvas.addEventListener('click', handleCaravanTap, true);
   globalThis.DorfkriegCaravans = () => ({ version: '20.0', count: state.caravans.length, caravans: state.caravans.map(item => ({ id: item.id, progress: Number(item.progress.toFixed(2)), faction: item.faction })) });
   console.info('Dorfkrieg v20.0: Karawanen-System aktiv.');
+})();
+</script>
+
+<script>
+/* v20.1.0 – Debug-Fenster-Hooks (nur Darstellung) */
+(function(){
+  'use strict';
+  if(typeof debugState!=='object')return;
+
+  const baseDrawFog=globalThis.drawFog;
+  if(typeof baseDrawFog==='function'){
+    globalThis.drawFog=function(){
+      if(!debugState.fogOfWar)return;
+      return baseDrawFog.apply(this,arguments);
+    };
+  }
+
+  const baseDrawFactionTerritoryBorders=globalThis.drawFactionTerritoryBorders;
+  if(typeof baseDrawFactionTerritoryBorders==='function'){
+    globalThis.drawFactionTerritoryBorders=function(){
+      if(!debugState.showBorders)return;
+      return baseDrawFactionTerritoryBorders.apply(this,arguments);
+    };
+  }
+
+  const baseDrawTerritoryFillOnMinimap=globalThis.drawTerritoryFillOnMinimap;
+  if(typeof baseDrawTerritoryFillOnMinimap==='function'){
+    globalThis.drawTerritoryFillOnMinimap=function(){
+      if(!debugState.showTerritories)return;
+      return baseDrawTerritoryFillOnMinimap.apply(this,arguments);
+    };
+  }
+
+  const baseMinimapVillageVisible=globalThis.minimapVillageVisible;
+  if(typeof baseMinimapVillageVisible==='function'){
+    globalThis.minimapVillageVisible=function(village){
+      if(!debugState.showAi&&village?.owner===FACTIONS.AI)return false;
+      return baseMinimapVillageVisible.apply(this,arguments);
+    };
+  }
+
+  const baseDrawSettlement=globalThis.drawSettlement;
+  if(typeof baseDrawSettlement==='function'){
+    globalThis.drawSettlement=function(village){
+      if(!debugState.showAi&&village?.owner===FACTIONS.AI)return;
+      return baseDrawSettlement.apply(this,arguments);
+    };
+  }
+
+  const baseDrawUnit=globalThis.drawUnit;
+  if(typeof baseDrawUnit==='function'){
+    globalThis.drawUnit=function(unit){
+      if(!debugState.showAi&&unit?.faction===FACTIONS.AI)return;
+      return baseDrawUnit.apply(this,arguments);
+    };
+  }
+
+  const baseDrawFormationIndicator=globalThis.drawFormationIndicator;
+  if(typeof baseDrawFormationIndicator==='function'){
+    globalThis.drawFormationIndicator=function(unit){
+      if(!debugState.showAi&&unit?.faction===FACTIONS.AI)return;
+      return baseDrawFormationIndicator.apply(this,arguments);
+    };
+  }
+
+  function drawVisionDebugOverlay(){
+    if(!debugState.showVision)return;
+    if(!Array.isArray(villages)||!Array.isArray(units))return;
+    if(typeof beginCamera!=='function'||typeof endCamera!=='function')return;
+
+    beginCamera();
+    ctx.save();
+    ctx.lineWidth=2/Math.max(.6,camera.zoom||1);
+    ctx.strokeStyle='rgba(128,233,178,.82)';
+    ctx.fillStyle='rgba(128,233,178,.09)';
+
+    for(const village of villages){
+      if(village.owner!==FACTIONS.PLAYER)continue;
+      const radius=(
+        village.tier===0?105:
+        village.tier===1?125:
+        village.tier===2?145:
+        165
+      )*(typeof biomeVisionAt==='function'?biomeVisionAt(village.x,village.y):1);
+      ctx.beginPath();
+      ctx.arc(village.x,village.y,radius,0,Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle='rgba(126,198,255,.82)';
+    ctx.fillStyle='rgba(126,198,255,.09)';
+    for(const unit of units){
+      if(unit.dead||unit.faction!==FACTIONS.PLAYER)continue;
+      const radius=(
+        unit.type==='cavalry'?92:
+        unit.type==='captain'?88:
+        unit.type==='archer'?78:
+        70
+      )*(typeof biomeVisionAt==='function'?biomeVisionAt(unit.x,unit.y):1);
+      ctx.beginPath();
+      ctx.arc(unit.x,unit.y,radius,0,Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.restore();
+    endCamera();
+  }
+
+  const baseDraw=globalThis.draw;
+  if(typeof baseDraw==='function'){
+    globalThis.draw=function(){
+      const result=baseDraw.apply(this,arguments);
+      drawVisionDebugOverlay();
+      return result;
+    };
+  }
 })();
 </script>
 </body>

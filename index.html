@@ -17477,11 +17477,17 @@ function updateFactionUiColors(){
   updateMinimapFactionColors();
   const playerData=FACTIONS_DATA[playerFaction];
   const aiData=FACTIONS_DATA[aiFaction];
+  const hostileFactionId=getHostileFactionsForPlayer()[0]?.id||FACTIONS.AI;
+  const hostileColor=(
+    hostileFactionId&&isAiFaction(hostileFactionId)
+      ? factionPrimaryColor(hostileFactionId)
+      : aiData.color
+  );
   const playerElement=document.querySelector(".player-panel");
   const aiElement=document.querySelector(".ai-panel");
 
   document.documentElement.style.setProperty("--player",playerData.color);
-  document.documentElement.style.setProperty("--ai",aiData.color);
+  document.documentElement.style.setProperty("--ai",hostileColor);
 
   if(playerElement){
     playerElement.style.borderColor=playerData.color;
@@ -17490,9 +17496,9 @@ function updateFactionUiColors(){
   }
 
   if(aiElement){
-    aiElement.style.borderColor=aiData.color;
+    aiElement.style.borderColor=hostileColor;
     aiElement.style.boxShadow=
-      `0 8px 24px rgba(0,0,0,.32), inset -4px 0 0 ${aiData.color}`;
+      `0 8px 24px rgba(0,0,0,.32), inset -4px 0 0 ${hostileColor}`;
   }
 }
 
@@ -18627,7 +18633,12 @@ function drawSettlementGrowthOverlay(v,size){
 }
 
 function factionSettlementStyle(faction){
-  const key=faction===FACTIONS.PLAYER?playerFaction:aiFaction;
+  const profile=factionData(faction);
+  const key=Object.keys(FACTIONS_DATA).find(name=>FACTIONS_DATA[name]===profile)||(
+    faction===FACTIONS.PLAYER
+      ? playerFaction
+      : aiFaction
+  );
 
   const styles={
     nordmen:{roof:"#546b7f",wall:"#a99d89",trim:"#d9e0e8",accent:"#334b63"},

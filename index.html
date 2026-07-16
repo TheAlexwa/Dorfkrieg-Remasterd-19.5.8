@@ -3639,6 +3639,10 @@
 .v18-time-breakdown{display:grid;justify-items:end;align-content:center;text-align:right;line-height:1.05}
 .v18-time-breakdown b{color:#f1d28e;font-size:.72rem}
 .v18-time-breakdown small{display:block;margin-top:3px;font-size:.49rem;color:#c7b695;white-space:nowrap}
+.v20-building-filter{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-bottom:8px}
+.v20-building-filter button{min-height:36px;padding:6px 8px;font-size:.62rem;font-weight:900}
+.v20-building-filter button.active{border-color:rgba(239,199,93,.64);background:linear-gradient(180deg,rgba(108,79,34,.96),rgba(70,48,20,.96));color:#fff4d7;box-shadow:0 0 0 1px rgba(239,199,93,.18)}
+.v20-building-empty{padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.05);font-size:.64rem;line-height:1.35;color:#d9c8a7}
 .v18-compact-buildings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
 .v18-compact-buildings button{min-height:58px;padding:5px;font-size:.61rem;text-align:center}
 .v18-compact-buildings button small{display:block;font-size:.51rem;line-height:1.15;margin-top:2px}
@@ -8486,6 +8490,8 @@ function pay(res,cost){
 }
 function costText(c){ return `${c.gold}G · ${c.wood}H · ${c.stone}S`; }
 
+const DORFKRIEG_BUILDING_PANEL_STATE={filter:'normal'};
+
 function villageSpecialResource(v){
   if(v.owner!==FACTIONS.NEUTRAL)return null;
   return v.specialResource||generatedResourceMap.get(v.id)||["gold","wood","stone"][v.layer%3];
@@ -11838,6 +11844,7 @@ function resetGame(){
   armies.clear();
   pendingArmyOrder=null;
   pendingArmyRetargetId=null;
+  globalThis.assignSpecialLocationsToVillages?.(true);
   pendingRouteEditor=null;
   updateRouteEditorHud();
   nextArmyId=1;
@@ -12368,6 +12375,7 @@ function damageVillage(v,amount,attacker,sourceType="farmer"){
       v.totalPopulationGrowth=0;
       v.workers=null;
       v.cityRole=null;
+      globalThis.assignSpecialLocationsToVillages?.(true);
       v.roleAutomation=true;
       v.roleLastAppliedAt=-1;
       v.militia=0;
@@ -20266,7 +20274,172 @@ v1813DrawVillageBuildings=function(village){
   };
 
   const previousInfo=v18BuildingInfoData;
+
+  function specialLocationsApi(){
+    return globalThis.DorfkriegModules?.get?.('SpecialLocations')||null;
+  }
+
+  function specialBuildingTypeDefinition(typeId){
+    const type=(specialLocationsApi()?.types?.()||[]).find(entry=>entry.id===typeId)||null;
+    const building=type?.building||{};
+    return {
+      id:typeId,
+      icon:type?.icon||'📍',
+      name:type?.name||'Sondergebäude',
+      description:type?.description||'Dieses Sondergebäude wird über das Dorfmenü ausgebaut.',
+      maxLevel:Math.max(1,Math.floor(Number(building.maxLevel)||3)),
+      buildTime:Math.max(0,Number(building.buildTime)||0),
+      baseCost:building.baseCost||{gold:40,wood:30,stone:30},
+      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0,1,2,3],
+      effectLabel:building.effectLabel||'Effekt',
+      upgradeable:building.upgradeable!==false,
+      statusText:building.statusText||'Dieses Sondergebäude kann aktuell nicht ausgebaut werden.'
+    };
+  }
+
+  function formatSpecialValue(value){
+    const numeric=Number(value)||0;
+    const digits=Math.abs(numeric-Math.round(numeric))>.001?2:0;
+    return numeric.toFixed(digits).replace('.',',');
+  }
+
+  function specialBuildingEffectValue(definition,level){
+    const values=definition.effects||[];
+    const normalized=Math.max(1,Math.floor(Number(level)||1));
+    return values[normalized]??values[values.length-1]??0;
+  }
+
+  function specialBuildingEffectText(definition,level){
+    const value=specialBuildingEffectValue(definition,level);
+    if(definition.id==='watchTower')return `${formatSpecialValue(value)} Sichtweite im eigenen Territorium.`;
+    return `+${formatSpecialValue(value)} ${definition.effectLabel}.`;
+  }
+
+  function specialBuildingUpgradeCost(definition,nextLevel){
+    const base=definition.baseCost||{gold:0,wood:0,stone:0};
+    const scale=
+      nextLevel===1?1:
+      nextLevel===2?1.55:
+      nextLevel===3?2.25:
+      3;
+    return {
+      gold:Math.ceil((base.gold||0)*scale/5)*5,
+      wood:Math.ceil((base.wood||0)*scale/5)*5,
+      stone:Math.ceil((base.stone||0)*scale/5)*5
+    };
+  }
+
+  function isRecognizedSpecialLocation(location){
+    if(!location||location.active===false||!location.villageId)return false;
+    const typeId=location.specialType||location.type;
+    const known=(specialLocationsApi()?.types?.()||[]).some(entry=>entry.id===typeId);
+    return location.category==='special'||known;
+  }
+
+  function villageSpecialBuildings(village){
+    globalThis.assignSpecialLocationsToVillages?.();
+    const entries=specialLocationsApi()?.entries?.()||[];
+    return entries.filter(location=>isRecognizedSpecialLocation(location)&&location.villageId===village.id);
+  }
+
+  function getVillageBuildingEntries(village){
+    const entries=[
+      {kind:'tier',key:'tier',icon:'🏘',name:visualSettlementStage(village),level:village.tier,max:3,category:'normal'},
+      {kind:'defense',key:'wall',icon:DEFENSE_BUILDINGS.wall.icon,name:DEFENSE_BUILDINGS.wall.name,level:defenseLevel(village,'wall'),max:DEFENSE_BUILDINGS.wall.maxLevel,category:'normal'},
+      {kind:'defense',key:'tower',icon:DEFENSE_BUILDINGS.tower.icon,name:DEFENSE_BUILDINGS.tower.name,level:defenseLevel(village,'tower'),max:DEFENSE_BUILDINGS.tower.maxLevel,category:'normal'}
+    ];
+
+    for(const key of Object.keys(MILITARY_FACILITIES)){
+      entries.push({kind:'military',key,icon:MILITARY_FACILITIES[key].icon,name:MILITARY_FACILITIES[key].name,level:facilityLevel(village,key),max:3,category:'normal'});
+    }
+
+    const economy=v1813EnsureEconomyBuildings(village);
+    for(const key of ['farm','lumber','quarry','market']){
+      entries.push({kind:'economy',key,icon:ECONOMY[key].icon,name:ECONOMY[key].name,level:economy[key]||0,max:3,category:'normal'});
+    }
+
+    if(typeof openVillageRoadSection==='function'){
+      entries.push({kind:'roads',key:'roads',icon:'🛣',name:'Straßen',level:localRoadLevel(village),max:3,category:'normal'});
+    }
+
+    for(const location of villageSpecialBuildings(village)){
+      const definition=specialBuildingTypeDefinition(location.specialType||location.type);
+      entries.push({
+        kind:'special',
+        key:location.id,
+        icon:definition.icon,
+        name:definition.name,
+        level:Math.max(1,Math.floor(Number(location.level)||1)),
+        max:definition.maxLevel,
+        category:'special',
+        specialType:location.specialType||location.type,
+        villageId:location.villageId,
+        buildProgress:Math.max(0,Math.min(1,Number(location.buildProgress)||0)),
+        description:definition.description,
+        currentEffect:specialBuildingEffectText(definition,Math.max(1,Math.floor(Number(location.level)||1))),
+        nextEffect:Math.max(1,Math.floor(Number(location.level)||1))>=definition.maxLevel?'Maximal ausgebaut.':specialBuildingEffectText(definition,Math.min(definition.maxLevel,Math.max(1,Math.floor(Number(location.level)||1))+1)),
+        upgradeCost:Math.max(1,Math.floor(Number(location.level)||1))>=definition.maxLevel?null:specialBuildingUpgradeCost(definition,Math.min(definition.maxLevel,Math.max(1,Math.floor(Number(location.level)||1))+1)),
+        upgradeTime:definition.buildTime,
+        location
+      });
+    }
+
+    return entries;
+  }
+
   v18BuildingInfoData=function(v,kind,key){
+    if(kind==='special'){
+      const location=typeof key==='string'
+        ? globalThis.getSpecialLocationById?.(key)
+        : key;
+      if(!location)return previousInfo(v,kind,key);
+
+      const definition=specialBuildingTypeDefinition(location.specialType||location.type);
+      const level=Math.max(1,Math.floor(Number(location.level)||1));
+      const maxLevel=definition.maxLevel;
+      const next=Math.min(maxLevel,level+1);
+      const maxed=level>=maxLevel;
+      const cost=maxed?null:specialBuildingUpgradeCost(definition,next);
+      const allowed=maxed?false:levelAllowed(v,next);
+      const upgradeable=definition.upgradeable!==false;
+      const progress=Math.round((Math.max(0,Math.min(1,Number(location.buildProgress)||0))*100));
+      const statusHint=!upgradeable
+        ? definition.statusText
+        : maxed
+          ? 'Maximal'
+          : !allowed
+            ? settlementRequirementText(next)
+            : `Auf Stufe ${next} · ${costText(cost)}`;
+      return {
+        icon:definition.icon,
+        name:`${definition.name} · Stufe ${level}/${maxLevel}`,
+        built:level>0,
+        cost,
+        description:definition.description,
+        benefits:[
+          ['✨ Aktueller Effekt',specialBuildingEffectText(definition,level)],
+          ['⬆ Nächster Effekt',maxed?'Maximal ausgebaut.':specialBuildingEffectText(definition,next)],
+          ['🏘 Voraussetzung',maxed?'Keine weitere Stufe.':settlementRequirementText(next)],
+          ['⏱ Bauzeit',`${definition.buildTime>0?`${formatSpecialValue(definition.buildTime)} s`:'Sofort'} · Fortschritt ${progress} %`],
+          ['ℹ Status',statusHint]
+        ],
+        buildLabel:statusHint,
+        canBuild:upgradeable&&!maxed&&allowed&&canAfford(playerRes,cost),
+        lockedByTier:upgradeable&&!maxed&&!allowed,
+        build(){
+          if(!upgradeable||maxed||!allowed||!canAfford(playerRes,cost))return false;
+          pay(playerRes,cost);
+          globalThis.updateSpecialLocationBuilding?.(location.id,{
+            level:next,
+            buildProgress:1,
+            buildTime:definition.buildTime,
+            villageId:v.id,
+            owner:v.owner
+          });
+          return true;
+        }
+      };
+    }
     if(kind==='defense'){
       const data=DEFENSE_BUILDINGS[key];
       const maxLevel=data.maxLevel||3;
@@ -20322,24 +20495,59 @@ v1813DrawVillageBuildings=function(village){
     popupDescription.textContent='Gebäudestufe 1 benötigt Stadt, Stufe 2 Burg und Stufe 3 Hauptstadt.';
     popupStats.innerHTML=`<span class="pill">🏘 ${TIERS[v.tier].name}</span><span class="pill">G ${Math.floor(playerRes.gold)}</span><span class="pill">H ${Math.floor(playerRes.wood)}</span><span class="pill">S ${Math.floor(playerRes.stone)}</span>`;
     popupContent.innerHTML='';
-    const grid=document.createElement('div');grid.className='v18-compact-buildings';
-    const add=(kind,key,icon,name,level,max=3)=>{
-      const info=v18BuildingInfoData(v,kind,key);const b=document.createElement('button');
-      b.className=info.canBuild?'v185-buildable':level>=max?'v185-maxed':level>0?'v185-built':'v185-unaffordable';
-      if(kind==='defense')b.classList.add('v1822-defense-button');
-      b.innerHTML=`<strong>${icon} ${name}</strong><small>Stufe ${level}/${max} · Info${info.lockedByTier?`<span class="v1822-tier-lock">🔒 ${info.buildLabel}</span>`:''}</small>`;
-      b.onclick=()=>showV18BuildingInfo(v,kind,key);grid.appendChild(b);
-    };
-    add('tier','tier','🏘',visualSettlementStage(v),v.tier,3);
-    add('defense','wall',DEFENSE_BUILDINGS.wall.icon,DEFENSE_BUILDINGS.wall.name,defenseLevel(v,'wall'),DEFENSE_BUILDINGS.wall.maxLevel);
-    add('defense','tower',DEFENSE_BUILDINGS.tower.icon,DEFENSE_BUILDINGS.tower.name,defenseLevel(v,'tower'),DEFENSE_BUILDINGS.tower.maxLevel);
-    for(const key of Object.keys(MILITARY_FACILITIES))add('military',key,MILITARY_FACILITIES[key].icon,MILITARY_FACILITIES[key].name,facilityLevel(v,key));
-    const econ=v1813EnsureEconomyBuildings(v);
-    for(const key of ['farm','lumber','quarry','market'])add('economy',key,ECONOMY[key].icon,ECONOMY[key].name,econ[key]||0);
-    if(typeof openVillageRoadSection==='function'){
-      const rb=document.createElement('button');rb.className='v185-built';rb.innerHTML='<strong>🛣 Straßen</strong><small>Angrenzende Wege verwalten</small>';rb.onclick=()=>openVillageRoadSection(v);grid.appendChild(rb);
+    const controls=document.createElement('div');
+    controls.className='v20-building-filter';
+    const entries=getVillageBuildingEntries(v);
+    const normalEntries=entries.filter(entry=>entry.category==='normal');
+    const specialEntries=entries.filter(entry=>entry.category==='special');
+    const activeFilter=DORFKRIEG_BUILDING_PANEL_STATE.filter==='special'?'special':'normal';
+    const filters=[['normal','Gebäude'],['special','Sondergebäude']];
+    for(const [filterKey,label] of filters){
+      const button=document.createElement('button');
+      button.type='button';
+      button.textContent=label;
+      button.classList.toggle('active',activeFilter===filterKey);
+      button.onclick=()=>{
+        DORFKRIEG_BUILDING_PANEL_STATE.filter=filterKey;
+        openV18CompactVillageSection(v,'buildings');
+      };
+      controls.appendChild(button);
     }
-    popupContent.appendChild(grid);openPopupOverlay('city');
+    popupContent.appendChild(controls);
+
+    const grid=document.createElement('div');
+    grid.className='v18-compact-buildings';
+
+    const addEntryButton=entry=>{
+      if(entry.kind==='roads'){
+        const button=document.createElement('button');
+        button.className='v185-built v1820-road-building-button';
+        button.innerHTML='<strong>🛣 Straßen</strong><small>Angrenzende Wege verwalten</small>';
+        button.onclick=()=>openVillageRoadSection(v);
+        grid.appendChild(button);
+        return;
+      }
+
+      const info=v18BuildingInfoData(v,entry.kind,entry.kind==='special'?entry.location.id:entry.key);
+      const button=document.createElement('button');
+      button.className=info.canBuild?'v185-buildable':entry.level>=entry.max?'v185-maxed':entry.level>0?'v185-built':'v185-unaffordable';
+      if(entry.kind==='defense')button.classList.add('v1822-defense-button');
+      button.innerHTML=`<strong>${entry.icon} ${entry.name}</strong><small>Stufe ${entry.level}/${entry.max} · Info${info.lockedByTier?`<span class="v1822-tier-lock">🔒 ${info.buildLabel}</span>`:''}</small>`;
+      button.onclick=()=>showV18BuildingInfo(v,entry.kind,entry.kind==='special'?entry.location.id:entry.key);
+      grid.appendChild(button);
+    };
+
+    const visibleEntries=activeFilter==='special'?specialEntries:normalEntries;
+    if(activeFilter==='special'&&!visibleEntries.length){
+      const empty=document.createElement('div');
+      empty.className='v20-building-empty';
+      empty.textContent='Im Territorium dieses Dorfes befindet sich kein Sondergebäude.';
+      popupContent.appendChild(empty);
+    }else{
+      visibleEntries.forEach(addEntryButton);
+      popupContent.appendChild(grid);
+    }
+    openPopupOverlay('city');
   };
 
   // Gebäudeleiste: Wirtschaft, Militär, Mauer, Turm und Straße in fester Reihenfolge.
@@ -23272,7 +23480,29 @@ Vorherige v18.48 Stabilitätsphase:
     for(const village of villages){
       parts.push(`${village.id}:${village.owner}:${villageTowerLevel(village)}`);
     }
+    const specialLocations=globalThis.DorfkriegModules?.get?.('SpecialLocations')?.entries?.()||[];
+    for(const location of specialLocations){
+      if(location?.active===false)continue;
+      parts.push(`${location.id}:${location.specialType||location.type}:${location.owner}:${location.villageId}:${location.level}:${Math.round(location.x)}:${Math.round(location.y)}`);
+    }
     return parts.join('|');
+  }
+
+  function specialLocationVisionRadius(location){
+    const typeId=location?.specialType||location?.type;
+    if(typeId!=='watchTower')return 0;
+    return Number(globalThis.getSpecialLocationEffectValue?.(typeId,Math.max(1,Math.floor(Number(location?.level)||1)))||0);
+  }
+
+  function activeOutpostsForVillage(village){
+    const entries=globalThis.DorfkriegModules?.get?.('SpecialLocations')?.entries?.()||[];
+    return entries.filter(location=>
+      location&&
+      location.active!==false&&
+      (location.specialType||location.type)==='watchTower'&&
+      location.villageId===village.id&&
+      location.owner===FACTIONS.PLAYER
+    );
   }
 
   function appendBoundarySegment(edges,x1,y1,x2,y2){
@@ -23475,6 +23705,7 @@ Vorherige v18.48 Stabilitätsphase:
     if(signature===territoryState.signature)return;
     territoryState.signature=signature;
     rebuildTerritories();
+    globalThis.assignSpecialLocationsToVillages?.(true);
   }
 
   function rebuildVillageVisionMask(){
@@ -23541,6 +23772,42 @@ Vorherige v18.48 Stabilitätsphase:
           }
         }
       }
+
+      const outposts=activeOutpostsForVillage(village);
+      for(const outpost of outposts){
+        const outpostRadius=specialLocationVisionRadius(outpost);
+        if(outpostRadius<=0)continue;
+        const outpostRadiusSq=outpostRadius*outpostRadius;
+        for(const index of cellIndices){
+          const gx=index%territoryState.gridW;
+          const gy=Math.floor(index/territoryState.gridW);
+          const cx=(gx+.5)*territoryState.cellSize;
+          const cy=(gy+.5)*territoryState.cellSize;
+          const dx=cx-outpost.x;
+          const dy=cy-outpost.y;
+          if(dx*dx+dy*dy>outpostRadiusSq)continue;
+
+          villageVisionState.worldCtx.fillRect(
+            gx*territoryState.cellSize,
+            gy*territoryState.cellSize,
+            territoryState.cellSize+1,
+            territoryState.cellSize+1
+          );
+
+          const worldCellX=gx*territoryState.cellSize;
+          const worldCellY=gy*territoryState.cellSize;
+          const minExploreGX=Math.max(0,Math.floor(worldCellX/fogExploreState.cellSize));
+          const maxExploreGX=Math.min(fogExploreState.gridW-1,Math.floor((worldCellX+territoryState.cellSize)/fogExploreState.cellSize));
+          const minExploreGY=Math.max(0,Math.floor(worldCellY/fogExploreState.cellSize));
+          const maxExploreGY=Math.min(fogExploreState.gridH-1,Math.floor((worldCellY+territoryState.cellSize)/fogExploreState.cellSize));
+
+          for(let eY=minExploreGY;eY<=maxExploreGY;eY++){
+            for(let eX=minExploreGX;eX<=maxExploreGX;eX++){
+              fogExploreState.cells[fogExploreIndex(eX,eY)]=1;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -23585,6 +23852,30 @@ Vorherige v18.48 Stabilitätsphase:
     return territoryState.villageGrid[territoryIndex(gx,gy)]===villageId;
   }
 
+  function territoryVillageIdAtPoint(x,y){
+    ensureTerritories();
+    const gx=Math.max(
+      0,
+      Math.min(
+        territoryState.gridW-1,
+        Math.floor(x/territoryState.cellSize)
+      )
+    );
+    const gy=Math.max(
+      0,
+      Math.min(
+        territoryState.gridH-1,
+        Math.floor(y/territoryState.cellSize)
+      )
+    );
+    return territoryState.villageGrid[territoryIndex(gx,gy)]||null;
+  }
+  globalThis.territoryVillageIdAtPoint=territoryVillageIdAtPoint;
+  globalThis.getTerritorySignature=function(){
+    ensureTerritories();
+    return territoryState.signature;
+  };
+
   function isVisibleFromVillageTerritory(village,x,y){
     if(!village||village.owner!==FACTIONS.PLAYER)return false;
     if(!villageOwnsTerritoryPoint(village.id,x,y))return false;
@@ -23595,6 +23886,23 @@ Vorherige v18.48 Stabilitätsphase:
     return Math.hypot(x-village.x,y-village.y)<=visibleRadius;
   }
 
+  function isVisibleFromSpecialOutpost(x,y){
+    const entries=globalThis.DorfkriegModules?.get?.('SpecialLocations')?.entries?.()||[];
+    for(const location of entries){
+      if(
+        !location||
+        location.active===false||
+        location.owner!==FACTIONS.PLAYER||
+        (location.specialType||location.type)!=='watchTower'
+      )continue;
+      const villageId=location.villageId;
+      if(!villageId||!villageOwnsTerritoryPoint(villageId,x,y))continue;
+      const radius=specialLocationVisionRadius(location);
+      if(radius>0&&Math.hypot(x-location.x,y-location.y)<=radius)return true;
+    }
+    return false;
+  }
+
   function isPlayerActiveVisibleArea(x,y){
     if(!fogEnabled)return true;
     ensureTerritories();
@@ -23602,6 +23910,8 @@ Vorherige v18.48 Stabilitätsphase:
     for(const village of villages){
       if(isVisibleFromVillageTerritory(village,x,y))return true;
     }
+
+    if(isVisibleFromSpecialOutpost(x,y))return true;
 
     for(const unit of units){
       if(unit.dead||unit.faction!==FACTIONS.PLAYER)continue;
@@ -24238,6 +24548,103 @@ Vorherige v18.48 Stabilitätsphase:
 
   const specialLocationTypes=new Map();
   const specialLocations=[];
+
+  function normalizeSpecialBuildProgress(value,level){
+    const fallback=(Number(level)||0)>0?1:0;
+    if(!Number.isFinite(Number(value)))return fallback;
+    return Math.max(0,Math.min(1,Number(value)));
+  }
+
+  function sanitizeSpecialLocation(typeId,data={}){
+    const owner=data.owner??data.faction??null;
+    const level=Math.max(1,Math.floor(Number(data.level)||1));
+    return {
+      id:data.id||`location-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,
+      type:typeId,
+      specialType:data.specialType||typeId,
+      category:'special',
+      owner,
+      villageId:data.villageId??null,
+      x:Number(data.x)||0,
+      y:Number(data.y)||0,
+      level,
+      buildProgress:normalizeSpecialBuildProgress(data.buildProgress,level),
+      buildTime:Math.max(0,Number(data.buildTime)||0),
+      active:data.active!==false,
+      meta:{...(data.meta||{})}
+    };
+  }
+
+  const specialLocationAssignmentState={signature:''};
+
+  function specialLocationAssignmentSignature(){
+    const territorySignature=typeof globalThis.getTerritorySignature==='function'
+      ? globalThis.getTerritorySignature()
+      : '';
+    const locationSignature=specialLocations
+      .map(location=>`${location.id}:${Math.round(location.x)}:${Math.round(location.y)}:${location.active!==false}`)
+      .join('|');
+    return `${territorySignature}|${locationSignature}`;
+  }
+
+  function assignSpecialLocationsToVillages(force=false){
+    if(typeof globalThis.territoryVillageIdAtPoint!=='function')return;
+    const signature=specialLocationAssignmentSignature();
+    if(!force&&signature===specialLocationAssignmentState.signature)return;
+    specialLocationAssignmentState.signature=signature;
+
+    for(const location of specialLocations){
+      location.specialType=location.specialType||location.type;
+      location.category='special';
+      location.level=Math.max(1,Math.floor(Number(location.level)||1));
+      location.buildProgress=normalizeSpecialBuildProgress(location.buildProgress,location.level);
+      location.buildTime=Math.max(0,Number(location.buildTime)||0);
+
+      const villageId=globalThis.territoryVillageIdAtPoint(location.x,location.y);
+      location.villageId=villageId;
+
+      const village=villageId?getVillage(villageId):null;
+      location.owner=village?.owner??location.owner??FACTIONS.NEUTRAL;
+    }
+  }
+  globalThis.getSpecialLocationTypeDefinition=function(typeId){
+    const type=specialLocationTypes.get(typeId);
+    const building=type?.building||{};
+    return {
+      id:typeId,
+      icon:type?.icon||'📍',
+      name:type?.name||'Sondergebäude',
+      description:type?.description||'Dieses Sondergebäude wird über das Dorfmenü ausgebaut.',
+      maxLevel:Math.max(1,Math.floor(Number(building.maxLevel)||3)),
+      buildTime:Math.max(0,Number(building.buildTime)||0),
+      baseCost:building.baseCost||{gold:40,wood:30,stone:30},
+      effects:Array.isArray(building.effects)&&building.effects.length?building.effects:[0,1,2,3],
+      effectLabel:building.effectLabel||'Effekt'
+    };
+  };
+  globalThis.getSpecialLocationEffectValue=function(typeId,level){
+    const definition=globalThis.getSpecialLocationTypeDefinition(typeId);
+    const values=definition.effects||[];
+    const normalized=Math.max(1,Math.floor(Number(level)||1));
+    return values[normalized]??values[values.length-1]??0;
+  };
+  globalThis.getSpecialLocationEffectText=function(typeId,level){
+    const definition=globalThis.getSpecialLocationTypeDefinition(typeId);
+    const value=globalThis.getSpecialLocationEffectValue(typeId,level);
+    const formatted=(Number(value)||0).toFixed(Math.abs((Number(value)||0)-Math.round(Number(value)||0))>.001?2:0).replace('.',',');
+    if(definition.id==='watchTower')return `${formatted} Sichtweite im eigenen Territorium.`;
+    return `+${formatted} ${definition.effectLabel}.`;
+  };
+  globalThis.assignSpecialLocationsToVillages=assignSpecialLocationsToVillages;
+  globalThis.getSpecialLocationById=function(id){
+    return specialLocations.find(location=>location.id===id)||null;
+  };
+  globalThis.updateSpecialLocationBuilding=function(id,patch={}){
+    const result=specialLocationsApi.update(id,patch);
+    assignSpecialLocationsToVillages(true);
+    return result;
+  };
+
   const specialLocationsApi={
     registerType(type){
       if(!type?.id)throw new Error('Sonderort-Typ benötigt eine ID.');
@@ -24247,19 +24654,28 @@ Vorherige v18.48 Stabilitätsphase:
     create(typeId,data={}){
       const type=specialLocationTypes.get(typeId);
       if(!type)throw new Error(`Unbekannter Sonderort-Typ: ${typeId}`);
-      const location={id:data.id||`location-${Date.now()}-${Math.random().toString(36).slice(2,7)}`,type:typeId,owner:data.owner??null,x:Number(data.x)||0,y:Number(data.y)||0,level:Math.max(1,Number(data.level)||1),active:data.active!==false,meta:{...(data.meta||{})}};
+      const location=sanitizeSpecialLocation(typeId,data);
       specialLocations.push(location);
+      assignSpecialLocationsToVillages(true);
       emit('specialLocation:created',location);
       return location;
     },
-    remove(id){const index=specialLocations.findIndex(item=>item.id===id);if(index<0)return false;const [removed]=specialLocations.splice(index,1);emit('specialLocation:removed',removed);return true;},
+    remove(id){const index=specialLocations.findIndex(item=>item.id===id);if(index<0)return false;const [removed]=specialLocations.splice(index,1);specialLocationAssignmentState.signature='';emit('specialLocation:removed',removed);return true;},
     get(id){const item=specialLocations.find(entry=>entry.id===id);return item?{...item,meta:{...item.meta}}:null;},
     update(id,patch={}){
       const item=specialLocations.find(entry=>entry.id===id);if(!item)return null;
       if(Object.prototype.hasOwnProperty.call(patch,'owner'))item.owner=patch.owner;
+      if(Object.prototype.hasOwnProperty.call(patch,'villageId'))item.villageId=patch.villageId??null;
       if(Object.prototype.hasOwnProperty.call(patch,'active'))item.active=Boolean(patch.active);
       if(Number.isFinite(Number(patch.level)))item.level=Math.max(1,Number(patch.level));
+      if(Number.isFinite(Number(patch.x)))item.x=Number(patch.x);
+      if(Number.isFinite(Number(patch.y)))item.y=Number(patch.y);
+      if(Object.prototype.hasOwnProperty.call(patch,'buildProgress'))item.buildProgress=normalizeSpecialBuildProgress(patch.buildProgress,item.level);
+      if(Object.prototype.hasOwnProperty.call(patch,'buildTime'))item.buildTime=Math.max(0,Number(patch.buildTime)||0);
+      if(Object.prototype.hasOwnProperty.call(patch,'specialType'))item.specialType=patch.specialType||item.type;
+      item.category='special';
       if(patch.meta&&typeof patch.meta==='object')Object.assign(item.meta,patch.meta);
+      assignSpecialLocationsToVillages(true);
       emit('specialLocation:updated',item);
       return {...item,meta:{...item.meta}};
     },
@@ -24267,7 +24683,7 @@ Vorherige v18.48 Stabilitätsphase:
     entries(){return specialLocations;},
     types(){return[...specialLocationTypes.values()];}
   };
-  register({id:'SpecialLocations',version:'1.0.0',dependencies:['EventMessages'],state:{locations:specialLocations},api:specialLocationsApi,hooks:{init(ctx){ctx.registerService('specialLocations',specialLocationsApi);},reset(ctx){ctx.state.locations.length=0;}}});
+  register({id:'SpecialLocations',version:'1.0.0',dependencies:['EventMessages'],state:{locations:specialLocations},api:specialLocationsApi,hooks:{init(ctx){ctx.registerService('specialLocations',specialLocationsApi);assignSpecialLocationsToVillages(true);},reset(ctx){ctx.state.locations.length=0;specialLocationAssignmentState.signature='';}}});
 
   const worldEventTypes=new Map();
   const worldEventState={enabled:false,active:[],cooldown:0};
@@ -24293,9 +24709,10 @@ Vorherige v18.48 Stabilitätsphase:
   register({id:'InvasionSystem',version:'1.0.0',dependencies:['EventMessages','WorldEvents'],state:invasionState,api:invasionApi,hooks:{init(ctx){ctx.registerService('invasions',invasionApi);},reset(ctx){ctx.state.active.length=0;}}});
 
   // V19-Grundtypen: registriert, aber absichtlich noch nicht automatisch gespawnt.
-  specialLocationsApi.registerType({id:'goldMine',name:'Goldmine',icon:'⛏️',category:'resource'});
-  specialLocationsApi.registerType({id:'woodCamp',name:'Holzlager',icon:'🌲',category:'resource'});
-  specialLocationsApi.registerType({id:'watchTower',name:'Wachturm',icon:'👁️',category:'vision'});
+  specialLocationsApi.registerType({id:'goldMine',name:'Goldmine',icon:'⛏️',category:'resource',description:'Fördert dauerhaft Gold aus dem Territorium dieses Dorfes.',building:{maxLevel:3,buildTime:0,baseCost:{gold:55,wood:25,stone:40},effects:[0,0.2,0.35,0.5],effectLabel:'Gold pro Sekunde'}});
+  specialLocationsApi.registerType({id:'woodCamp',name:'Forstplatz',icon:'🌲',category:'resource',description:'Nutzt die vorhandene Holzlogik des Territoriums für einen lokalen Holzbonus.',building:{maxLevel:3,buildTime:0,baseCost:{gold:35,wood:45,stone:20},effects:[0,0.2,0.35,0.5],effectLabel:'Holz pro Sekunde'}});
+  specialLocationsApi.registerType({id:'stoneQuarry',name:'Steinbruch',icon:'🪨',category:'resource',description:'Nutzt die vorhandene Steinlogik des Territoriums für einen lokalen Steinbonus.',building:{maxLevel:3,buildTime:0,baseCost:{gold:40,wood:20,stone:35},effects:[0,0.2,0.35,0.5],effectLabel:'Stein pro Sekunde'}});
+  specialLocationsApi.registerType({id:'watchTower',name:'Aussichtsposten',icon:'👁️',category:'vision',description:'Erzeugt lokale permanente Sicht um seine Kartenposition, begrenzt durch das eigene Territorium.',building:{maxLevel:3,buildTime:0,baseCost:{gold:45,wood:30,stone:35},effects:[0,175,230,290],effectLabel:'Sichtweite'}});
   worldEventsApi.registerType({id:'banditCamp',name:'Banditenlager',icon:'🏴',temporary:true});
   invasionApi.registerType({id:'foreignArmy',name:'Fremde Invasionsarmee',icon:'⚠️'});
 
@@ -24375,8 +24792,9 @@ const liveLocations=()=>typeof locations.entries==='function'?locations.entries(
 const state={generated:false,resourceClock:0,capture:new Map(),banditClock:0,nextBandit:360+Math.random()*180,bandits:[],lastTap:0};
 const TYPE={
  goldMine:{icon:'⛏️',name:'Goldmine',color:'#efc75d',income:{gold:.20}},
- woodCamp:{icon:'🌲',name:'Holzlager',color:'#85bf69',income:{wood:.20}},
- watchTower:{icon:'👁️',name:'Wachturm',color:'#9bc9e8',vision:175}
+ woodCamp:{icon:'🌲',name:'Forstplatz',color:'#85bf69',income:{wood:.20}},
+ stoneQuarry:{icon:'🪨',name:'Steinbruch',color:'#b9bec2',income:{stone:.20}},
+ watchTower:{icon:'👁️',name:'Aussichtsposten',color:'#9bc9e8',vision:175}
 };
 const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const now=()=>Number(typeof worldTime!=='undefined'?worldTime:0);
@@ -24397,7 +24815,17 @@ function roadCandidates(){
 }
 function farEnough(point,arr,min=115){return arr.every(p=>Math.hypot(point.x-p.x,point.y-p.y)>=min);}
 function generate(){
- if(state.generated||!villages?.length)return;
+ if(!villages?.length)return;
+ const requiredTypes=['goldMine','woodCamp','stoneQuarry','watchTower'];
+ const existingCounts=Object.fromEntries(requiredTypes.map(type=>[type,0]));
+ for(const location of liveLocations()){
+  const typeId=location?.specialType||location?.type;
+  if(Object.prototype.hasOwnProperty.call(existingCounts,typeId))existingCounts[typeId]++;
+ }
+ const typesToCreate=state.generated
+  ? requiredTypes.filter(type=>!existingCounts[type])
+  : requiredTypes.slice();
+ if(state.generated&&!typesToCreate.length)return;
  const candidates=roadCandidates(),placed=[];
  const count=Math.max(2,Math.min(3,Math.round(villages.length/8)));
  const mapCenter={x:villages.reduce((sum,v)=>sum+v.x,0)/villages.length,y:villages.reduce((sum,v)=>sum+v.y,0)/villages.length};
@@ -24406,8 +24834,8 @@ function generate(){
   const angle=(typeIndex*2.1+itemIndex*2.45)+.35;
   return{x:mapCenter.x+Math.cos(angle)*radius,y:mapCenter.y+Math.sin(angle)*radius,a:null,b:null};
  }
- const totals={goldMine:0,woodCamp:0,watchTower:0};
- ['goldMine','woodCamp','watchTower'].forEach((type,typeIndex)=>{
+ const totals={goldMine:0,woodCamp:0,stoneQuarry:0,watchTower:0};
+ typesToCreate.forEach((type,typeIndex)=>{
   for(let i=0;i<count;i++){
    let p=candidates.find(q=>farEnough(q,placed,92));
    if(p)candidates.splice(candidates.indexOf(p),1);else p=fallbackPoint(typeIndex,i);
@@ -24416,9 +24844,9 @@ function generate(){
    totals[type]++;
   }
  });
- state.generated=placed.length>0;
- if(state.generated)messages.notify('🌍 Sonderorte entdeckt',`${totals.goldMine} Goldminen · ${totals.woodCamp} Holzlager · ${totals.watchTower} Wachtürme wurden auf der Karte platziert.`,{duration:8});
- else messages.notify('⚠ Sonderorte konnten nicht erzeugt werden','Die Kartenplatzierung wird erneut versucht.',{type:'warning',duration:7});
+ state.generated=state.generated||placed.length>0;
+ if(placed.length>0)messages.notify('🌍 Sonderorte entdeckt',`${totals.goldMine} Goldminen · ${totals.woodCamp} Forstplätze · ${totals.stoneQuarry} Steinbrüche · ${totals.watchTower} Aussichtsposten wurden auf der Karte platziert.`,{duration:8});
+ else if(!state.generated)messages.notify('⚠ Sonderorte konnten nicht erzeugt werden','Die Kartenplatzierung wird erneut versucht.',{type:'warning',duration:7});
 }
 function nearbyForces(x,y,r=58){
  const counts={[FACTIONS.PLAYER]:0,[FACTIONS.AI]:0};
@@ -24426,6 +24854,12 @@ function nearbyForces(x,y,r=58){
  return counts;
 }
 function updateCapture(loc,dt){
+ if(loc.category==='special'&&loc.villageId){
+  const village=getVillage(loc.villageId);
+  if(village&&loc.owner!==village.owner)locations.update?.(loc.id,{owner:village.owner,villageId:village.id});
+  state.capture.set(loc.id,{faction:null,progress:0});
+  return;
+ }
  const c=nearbyForces(loc.x,loc.y);
  const p=c[FACTIONS.PLAYER],a=c[FACTIONS.AI];
  let contender=null;if(p>0&&a===0)contender=FACTIONS.PLAYER;else if(a>0&&p===0)contender=FACTIONS.AI;
@@ -24446,7 +24880,9 @@ function payIncome(dt){
  for(const loc of liveLocations()){
   if(!loc.active||!TYPE[loc.type]?.income||loc.owner===FACTIONS.NEUTRAL)continue;
   const res=loc.owner===FACTIONS.PLAYER?playerRes:aiRes;if(!res)continue;
-  for(const [key,rate] of Object.entries(TYPE[loc.type].income))res[key]=(Number(res[key])||0)+rate*dt;
+  const level=Math.max(1,Math.floor(Number(loc.level)||1));
+  const amount=Number(globalThis.getSpecialLocationEffectValue?.(loc.specialType||loc.type,level));
+  for(const [key,rate] of Object.entries(TYPE[loc.type].income))res[key]=(Number(res[key])||0)+(Number.isFinite(amount)?amount:rate)*dt;
  }
 }
 function spawnBandit(){
@@ -24505,8 +24941,10 @@ function openInfo(hit){
  if(!hit)return;popupContent.innerHTML='';
  if(hit.kind==='location'){
   const loc=hit.data,t=TYPE[loc.type];popupTitle.textContent=`${t.icon} ${t.name}`;popupStats.innerHTML=`<span class="pill">${factionName(loc.owner)}</span>`;
-  const effect=loc.type==='goldMine'?'+0,2 Gold pro Sekunde':loc.type==='woodCamp'?'+0,2 Holz pro Sekunde':'Erweitert die Sichtweite';
-  popupContent.innerHTML=`<div class="card"><h3>Strategischer Sonderort</h3><p>${effect}</p><p>Bringe eigene Soldaten für etwa fünf Sekunden in die Nähe, um den Ort einzunehmen. Umkämpfte Orte können nicht erobert werden.</p></div>`;
+  const level=Math.max(1,Math.floor(Number(loc.level)||1));
+  const effect=globalThis.getSpecialLocationEffectText?.(loc.specialType||loc.type,level)||(loc.type==='goldMine'?'+0,2 Gold pro Sekunde':loc.type==='woodCamp'?'+0,2 Holz pro Sekunde':loc.type==='stoneQuarry'?'+0,2 Stein pro Sekunde':'Erweitert die Sichtweite');
+  const village=loc.villageId?getVillage(loc.villageId):null;
+  popupContent.innerHTML=`<div class="card"><h3>Strategisches Sondergebäude</h3><p>${effect}</p><p>Stufe ${level} · ${village?`Gehört zum Territorium von ${village.name}.`:'Noch keinem Dorfterritorium zugeordnet.'}</p><p>Der Ausbau erfolgt über das Dorfmenü im Reiter Sondergebäude.</p></div>`;
  }else{
   const c=hit.data;popupTitle.textContent='🏴 Banditenlager';popupStats.innerHTML=`<span class="pill">⚔ ${Math.ceil(c.defenders)}/${c.maxDefenders}</span>`;
   popupContent.innerHTML=`<div class="card"><h3>Zeitlich begrenztes Ereignis</h3><p>Schicke Soldaten in die Nähe des Lagers. Die dortigen Truppen greifen es automatisch an.</p><p><strong>Beute:</strong> ${c.reward.gold} Gold · ${c.reward.wood} Holz · ${c.reward.stone} Stein</p><p>Verbleibend: ${Math.max(0,Math.ceil((c.expires-now())/60))} Minuten</p></div>`;
@@ -24525,13 +24963,11 @@ M.register({id:'LivingWorld',version:'1.0.0',dependencies:['EventMessages','Spec
  init(ctx){ctx.registerService('livingWorld',this?.api||null);events.enable(true);},
  start(){generate();},
  reset(){state.generated=false;state.resourceClock=0;state.capture.clear();state.banditClock=0;state.nextBandit=360+Math.random()*180;state.bandits.length=0;},
- update(ctx,dt){if(!document.body.classList.contains('game-started'))return;generate();for(const loc of liveLocations()){if(!loc.meta?.specialRoad)updateCapture(loc,dt);}payIncome(dt);state.banditClock+=dt;if(state.banditClock>=state.nextBandit&&!state.bandits.some(c=>c.active)){state.banditClock=0;state.nextBandit=480+Math.random()*300;spawnBandit();}for(const camp of state.bandits)updateBandit(camp,dt);},
+ update(ctx,dt){if(!document.body.classList.contains('game-started'))return;generate();globalThis.assignSpecialLocationsToVillages?.();for(const loc of liveLocations()){if(!loc.meta?.specialRoad)updateCapture(loc,dt);}payIncome(dt);state.banditClock+=dt;if(state.banditClock>=state.nextBandit&&!state.bandits.some(c=>c.active)){state.banditClock=0;state.nextBandit=480+Math.random()*300;spawnBandit();}for(const camp of state.bandits)updateBandit(camp,dt);},
  render
  }});
 
-// Wachtürme erweitern die Sicht, ohne gegnerische Bewegungen global aufzudecken.
-const oldVision=globalThis.getCurrentVisionSources;
-if(typeof oldVision==='function')globalThis.getCurrentVisionSources=function(){const result=oldVision.apply(this,arguments)||[];for(const loc of liveLocations()){if(loc.active&&loc.type==='watchTower'&&loc.owner===FACTIONS.PLAYER)result.push({x:loc.x,y:loc.y,radius:TYPE.watchTower.vision});}return result;};
+// Aussichtsposten-Sicht sitzt in der permanenten Territoriumsmaske und nicht als separate allgemeine Sichtquelle.
 
 // Das Modul wurde nach der initialen Foundation-Initialisierung registriert.
 M.initializeAll();
@@ -25137,13 +25573,15 @@ const missions=[];
 
 const activeLocations=()=>{
  const list=typeof locationApi.entries==='function'?locationApi.entries():locationApi.all?.();
- return Array.isArray(list)?list:[];
+ return Array.isArray(list)
+  ? list.filter(loc=>!(loc?.category==='special'&&loc?.villageId))
+  : [];
 };
 const locationById=id=>activeLocations().find(loc=>loc.id===id)||null;
 const keyFor=(a,b)=>`${a}::${b}`;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 function ownerColor(owner){return owner===FACTIONS.NEUTRAL?'#d7cfb8':(typeof factionPrimaryColor==='function'?factionPrimaryColor(owner):(owner===FACTIONS.PLAYER?'#4aa3ff':'#e35d5d'));}
-function iconFor(type){return type==='goldMine'?'⛏️':type==='woodCamp'?'🌲':'👁️';}
+function iconFor(type){return type==='goldMine'?'⛏️':type==='woodCamp'?'🌲':type==='stoneQuarry'?'🪨':'👁️';}
 // Eigene robuste Sichtprüfung für Living World. Sie ist absichtlich lokal,
 // damit spätere Module nicht von Helpern aus anderen Script-Sichtbereichen abhängen.
 function livingWorldPointVisible(x,y,owner=null){
@@ -25286,6 +25724,11 @@ function updateMissions(dt){
   }
   const arrivals=pArr.length?pArr:aArr; if(!arrivals.length)continue;
   const faction=arrivals[0].faction;
+    if(loc.category==='special'&&loc.villageId){
+     const anchor=getVillage(specialRoads.get(loc.id)?.anchorId);
+     if(anchor){for(const u of arrivals){addToGarrison(anchor,u.type,1,Math.max(1,u.hp));u.dead=true;}}
+     continue;
+    }
   if(loc.owner===faction){
    const anchor=getVillage(specialRoads.get(loc.id)?.anchorId);if(anchor){for(const u of arrivals){addToGarrison(anchor,u.type,1,Math.max(1,u.hp));u.dead=true;}}continue;
   }
@@ -25337,6 +25780,7 @@ window.DorfkriegSelectSpecialRouteAt=function(x,y){
  if(!pendingRouteEditor)return false;
  const loc=locationAtWorld(x,y);
  if(!loc)return false;
+ if(loc.category==='special'&&loc.villageId)return false;
  return showRouteSelection(loc);
 };
 window.DorfkriegConfirmSpecialRoute=function(){

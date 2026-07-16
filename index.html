@@ -6024,6 +6024,21 @@ function runtimeFactionColor(profileColor,factionId){
   return base;
 }
 
+function applyRuntimeAiPalettePrimaryColors(){
+  const aiProfile=FACTIONS_DATA[aiFaction]||null;
+
+  runtimeActiveFactions=runtimeActiveFactions.map(faction=>{
+    if(faction.type!=="ai")return faction;
+
+    const profile=FACTIONS_DATA[faction.profileKey]||aiProfile;
+    const baseColor=profile?.colors?.primary||profile?.color||aiProfile?.color;
+
+    return Object.assign({},faction,{
+      color:runtimeFactionColor(baseColor,faction.id)
+    });
+  });
+}
+
 function initializedFactionByDefault(entry,configured){
   return entry.type==="player"||(entry.id===FACTIONS.AI&&configured);
 }
@@ -6049,6 +6064,13 @@ function configureActiveFactions(aiCount,sizeKey){
       : false;
     const active=initialized;
     const profile=isPlayer?playerProfile:aiProfile;
+    const resolvedProfileKey=isPlayer
+      ? playerFaction
+      : (previous?.profileKey||aiFaction);
+    const resolvedProfile=isPlayer
+      ? playerProfile
+      : (FACTIONS_DATA[resolvedProfileKey]||aiProfile);
+    const resolvedAiPrimaryColor=resolvedProfile?.colors?.primary||resolvedProfile?.color||aiProfile?.color;
     const previousStartVillageId=String(
       previous?.startVillageId||""
     );
@@ -6072,11 +6094,14 @@ function configureActiveFactions(aiCount,sizeKey){
       initialized,
       pendingStart:configured&&!initialized,
       simulationEnabled,
-      color:runtimeFactionColor(profile?.color||COLORS[entry.type]||"#b8a98f",entry.id),
+      color:runtimeFactionColor(
+        isPlayer
+          ? (profile?.color||COLORS[entry.type]||"#b8a98f")
+          : (resolvedAiPrimaryColor||COLORS[entry.type]||"#b8a98f"),
+        entry.id
+      ),
       startVillageId,
-      profileKey:isPlayer
-        ? playerFaction
-        : (previous?.profileKey||aiFaction)
+      profileKey:resolvedProfileKey
     };
   });
 
@@ -6127,6 +6152,8 @@ function assignConfiguredAiCivilizations(seed){
     const profileKey=assigned.get(faction.id)||faction.profileKey||aiFaction;
     return Object.assign({},faction,{profileKey});
   });
+
+  applyRuntimeAiPalettePrimaryColors();
 }
 
 function refreshRuntimeActiveFactions(){

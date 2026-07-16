@@ -4385,6 +4385,16 @@ body.game-started .in-game-guide-btn { display: flex; }
           </select>
         </div>
 
+        <div class="start-field">
+          <label for="aiCountSelect">KI-Gegner</label>
+          <select id="aiCountSelect">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
+
         <div id="aiFactionPreview" class="faction-preview"></div>
         <button id="randomAiFactionBtn" class="random-faction-btn" type="button">🎲 Zufälliger KI-Gegner</button>
       </section>
@@ -4536,7 +4546,7 @@ body.game-started .in-game-guide-btn { display: flex; }
       <canvas id="minimapCanvas" width="236" height="300"></canvas>
       <div class="minimap-legend">
         <span><i class="minimap-dot" id="miniPlayerDot"></i>Du</span>
-        <span><i class="minimap-dot" id="miniAiDot"></i>KI</span>
+        <span><i class="minimap-dot" id="miniAiDot"></i>Gegner</span>
         <span><i class="minimap-dot" style="background:#aaa28d"></i>Neutral</span>
       </div>
     </div>
@@ -5531,10 +5541,8 @@ function drawMinimap(){
     const point=worldToMinimap(village.x,village.y);
 
     let color="#aaa28d";
-    if(village.owner===FACTIONS.PLAYER){
-      color=factionPrimaryColor(FACTIONS.PLAYER);
-    }else if(village.owner===FACTIONS.AI){
-      color=factionPrimaryColor(FACTIONS.AI);
+    if(village.owner===FACTIONS.PLAYER||isAiFaction(village.owner)){
+      color=factionPrimaryColor(village.owner);
     }
 
     minimapCtx.fillStyle=color;
@@ -5740,6 +5748,7 @@ const menuStartBtn=document.getElementById("menuStartBtn");
 const startupDiagnostic=document.getElementById("startupDiagnostic");
 const playerFactionSelect=document.getElementById("playerFactionSelect");
 const aiFactionSelect=document.getElementById("aiFactionSelect");
+const aiCountSelect=document.getElementById("aiCountSelect");
 const startDifficultySelect=document.getElementById("startDifficultySelect");
 const startSpeedSelect=document.getElementById("startSpeedSelect");
 const fogSelect=document.getElementById("fogSelect");
@@ -5812,6 +5821,407 @@ const popupDescription = document.getElementById("popupDescription");
 const popupContent = document.getElementById("popupContent");
 
 const FACTIONS = { PLAYER:"player", AI:"ai", NEUTRAL:"neutral" };
+
+// Phase 1: zentrale Runtime-Fraktionsbasis als Vorbereitung auf mehrere KI-Reiche.
+const RUNTIME_FACTION_BLUEPRINTS=[
+  {id:FACTIONS.PLAYER,type:"player",defaultStartVillageId:"P0"},
+  {id:FACTIONS.AI,type:"ai",defaultStartVillageId:"A0"},
+  {id:"ai2",type:"ai",defaultStartVillageId:"A1"},
+  {id:"ai3",type:"ai",defaultStartVillageId:"A2"},
+  {id:"ai4",type:"ai",defaultStartVillageId:"A3"}
+];
+
+let runtimeActiveFactions=[];
+
+function getMaxAiCountForMapSize(sizeKey){
+  if(sizeKey==="small")return 2;
+  if(sizeKey==="medium")return 3;
+  return 4;
+}
+
+function normalizeSelectedAiCount(value,sizeKey){
+  const parsed=Math.floor(Number(value)||1);
+  const max=getMaxAiCountForMapSize(sizeKey||selectedMapSize||"medium");
+  return Math.max(1,Math.min(max,parsed));
+}
+
+function mixHexColor(baseHex,mixHex,ratio=.5){
+  const clamp=Math.max(0,Math.min(1,Number(ratio)||0));
+  const normalizeHex=value=>{
+    const text=String(value||"").trim();
+    if(/^#[0-9a-fA-F]{6}$/.test(text))return text;
+    return "#888888";
+  };
+
+  const base=normalizeHex(baseHex);
+  const mix=normalizeHex(mixHex);
+  const parse=value=>parseInt(value,16);
+  const toHex=value=>Math.max(0,Math.min(255,Math.round(value))).toString(16).padStart(2,"0");
+
+  const br=parse(base.slice(1,3));
+  const bg=parse(base.slice(3,5));
+  const bb=parse(base.slice(5,7));
+  const mr=parse(mix.slice(1,3));
+  const mg=parse(mix.slice(3,5));
+  const mb=parse(mix.slice(5,7));
+
+  return `#${toHex(br+(mr-br)*clamp)}${toHex(bg+(mg-bg)*clamp)}${toHex(bb+(mb-bb)*clamp)}`;
+}
+
+function runtimeFactionColor(profileColor,factionId){
+  const base=profileColor||"#b8a98f";
+  if(factionId===FACTIONS.AI)return base;
+  if(factionId==="ai2")return mixHexColor(base,"#f3cf72",.38);
+  if(factionId==="ai3")return mixHexColor(base,"#77c58c",.34);
+  if(factionId==="ai4")return mixHexColor(base,"#8eb4ff",.36);
+  return base;
+}
+
+function initializedFactionByDefault(entry,configured){
+  return entry.type==="player"||(entry.id===FACTIONS.AI&&configured);
+}
+
+function configureActiveFactions(aiCount,sizeKey){
+  const normalizedAiCount=normalizeSelectedAiCount(aiCount,sizeKey);
+  let aiIndex=0;
+  const aiProfile=FACTIONS_DATA[aiFaction]||null;
+  const playerProfile=FACTIONS_DATA[playerFaction]||null;
+  const previousById=new Map(
+    runtimeActiveFactions.map(faction=>[faction.id,faction])
+  );
+
+  selectedAiCount=normalizedAiCount;
+
+  runtimeActiveFactions=RUNTIME_FACTION_BLUEPRINTS.map(entry=>{
+    const isPlayer=entry.type==="player";
+    const isAi=entry.type==="ai";
+    const configured=isPlayer||(isAi&&aiIndex<normalizedAiCount);
+    const previous=previousById.get(entry.id)||null;
+    const initialized=configured
+      ? (previous?.initialized===true||initializedFactionByDefault(entry,configured))
+      : false;
+    const active=initialized;
+    const profile=isPlayer?playerProfile:aiProfile;
+    const previousStartVillageId=String(
+      previous?.startVillageId||""
+    );
+    const startVillageId=configured
+      ? (previousStartVillageId||entry.defaultStartVillageId)
+      : "";
+    const defaultAiSimulation=isAi&&entry.id===FACTIONS.AI&&previous==null;
+    const simulationEnabled=initialized&&(
+      isPlayer||
+      previous?.simulationEnabled===true||
+      defaultAiSimulation
+    );
+
+    if(isAi)aiIndex++;
+
+    return {
+      id:entry.id,
+      type:entry.type,
+      configured,
+      active,
+      initialized,
+      pendingStart:configured&&!initialized,
+      simulationEnabled,
+      color:runtimeFactionColor(profile?.color||COLORS[entry.type]||"#b8a98f",entry.id),
+      startVillageId,
+      profileKey:isPlayer?playerFaction:aiFaction
+    };
+  });
+
+  return runtimeActiveFactions;
+}
+
+function refreshRuntimeActiveFactions(){
+  return configureActiveFactions(selectedAiCount,selectedMapSize);
+}
+
+function getRuntimeFactions(){
+  if(!runtimeActiveFactions.length)refreshRuntimeActiveFactions();
+  return runtimeActiveFactions;
+}
+
+function isPlayerFaction(factionId){
+  return factionId===FACTIONS.PLAYER;
+}
+
+function isAiFaction(factionId){
+  if(!factionId)return false;
+  const entry=getRuntimeFactions().find(item=>item.id===factionId);
+  if(entry)return entry.type==="ai";
+  return factionId===FACTIONS.AI;
+}
+
+function getActiveFactions(){
+  return getRuntimeFactions().filter(faction=>faction.active);
+}
+
+function getConfiguredFactions(){
+  return getRuntimeFactions().filter(faction=>faction.configured);
+}
+
+function getActiveAiFactions(){
+  return getActiveFactions().filter(faction=>faction.type==="ai");
+}
+
+function getConfiguredAiFactions(){
+  return getConfiguredFactions().filter(faction=>faction.type==="ai");
+}
+
+function getInitializedFactions(){
+  return getRuntimeFactions().filter(faction=>faction.initialized);
+}
+
+function runtimeFactionById(factionId){
+  return getRuntimeFactions().find(faction=>faction.id===factionId)||null;
+}
+
+function isValidRuntimeFactionId(factionId){
+  return typeof factionId==="string"&&
+    factionId.length>0&&
+    factionId!==FACTIONS.NEUTRAL;
+}
+
+function getTerritoryFactions(){
+  return getRuntimeFactions().filter(faction=>
+    faction.active===true&&
+    faction.initialized===true&&
+    isValidRuntimeFactionId(faction.id)&&
+    villages.some(village=>village.owner===faction.id)
+  );
+}
+
+function getRenderableFactions(){
+  return getRuntimeFactions().filter(faction=>
+    faction.active===true&&
+    faction.initialized===true&&
+    isValidRuntimeFactionId(faction.id)
+  );
+}
+
+function getHostileFactionsForPlayer(){
+  return getRenderableFactions().filter(faction=>
+    faction.id!==FACTIONS.PLAYER&&
+    isAiFaction(faction.id)
+  );
+}
+
+function isFactionSimulationEnabled(factionId){
+  const faction=getRuntimeFactions().find(item=>item.id===factionId);
+  if(faction)return Boolean(faction.simulationEnabled);
+  return factionId===FACTIONS.PLAYER||factionId===FACTIONS.AI;
+}
+
+function factionHasRelevantVillage(factionId){
+  if(!isValidRuntimeFactionId(factionId))return false;
+  return villages.some(village=>village.owner===factionId);
+}
+
+function getInitializedEnemyFactions(){
+  return getRuntimeFactions().filter(faction=>
+    faction.type==="ai"&&
+    faction.active===true&&
+    faction.initialized===true
+  );
+}
+
+function getActiveEnemyFactions(){
+  return getInitializedEnemyFactions().filter(faction=>
+    factionHasRelevantVillage(faction.id)
+  );
+}
+
+function setFactionSimulationEnabled(factionId,enabled){
+  runtimeActiveFactions=runtimeActiveFactions.map(faction=>
+    faction.id===factionId
+      ? Object.assign({},faction,{simulationEnabled:Boolean(enabled)})
+      : faction
+  );
+}
+
+function handleDefeatedAiFactions(){
+  for(const faction of getInitializedEnemyFactions()){
+    const alive=factionHasRelevantVillage(faction.id);
+    const shouldSimulate=alive;
+
+    if(Boolean(faction.simulationEnabled)!==shouldSimulate){
+      setFactionSimulationEnabled(faction.id,shouldSimulate);
+    }
+
+    if(!alive){
+      aiEmpireLogicTimerByFaction.delete(faction.id);
+      aiRouteRefreshTimerByFaction.delete(faction.id);
+      if(getCurrentAiProcessingFaction()===faction.id){
+        setCurrentAiProcessingFaction(null);
+      }
+    }
+  }
+}
+
+function getSimulationReadyAiFactions(){
+  return getRuntimeFactions().filter(faction=>{
+    if(faction.type!=="ai")return false;
+    if(!faction.active||!faction.initialized)return false;
+    if(!isFactionSimulationEnabled(faction.id))return false;
+    return factionHasRelevantVillage(faction.id);
+  });
+}
+
+let currentAiProcessingFactionId=null;
+
+function setCurrentAiProcessingFaction(factionId){
+  currentAiProcessingFactionId=factionId||null;
+}
+
+function getCurrentAiProcessingFaction(){
+  return currentAiProcessingFactionId;
+}
+
+function getConfiguredStartFactionVillageIds(){
+  return getConfiguredFactions()
+    .map(faction=>faction.startVillageId)
+    .filter(Boolean);
+}
+
+function getEnemyFactions(factionId){
+  return getActiveFactions()
+    .map(faction=>faction.id)
+    .filter(id=>id!==factionId);
+}
+
+function getActiveStartFactionVillageIds(){
+  return getActiveFactions()
+    .map(faction=>faction.startVillageId)
+    .filter(Boolean);
+}
+
+function getPrimaryPlayerStartVillageId(){
+  return getActiveFactions().find(faction=>faction.type==="player")?.startVillageId||"P0";
+}
+
+function getPrimaryAiStartVillageId(){
+  return getActiveAiFactions()[0]?.startVillageId||"A0";
+}
+
+function initializeConfiguredGameplayFactions(){
+  const byId=new Map(villageTemplate.map(village=>[village.id,village]));
+  const assigned=new Set();
+  const finalized=[];
+
+  const ordered=getRuntimeFactions().sort((a,b)=>{
+    const aiIndex=id=>RUNTIME_FACTION_BLUEPRINTS.findIndex(entry=>entry.id===id);
+    return aiIndex(a.id)-aiIndex(b.id);
+  });
+
+  for(const faction of ordered){
+    if(!faction.configured)continue;
+
+    const desiredId=String(faction.startVillageId||"");
+    const fallbackId=RUNTIME_FACTION_BLUEPRINTS.find(entry=>entry.id===faction.id)?.defaultStartVillageId||"";
+
+    let startId=desiredId;
+
+    if(
+      !startId||
+      !byId.has(startId)||
+      assigned.has(startId)
+    ){
+      if(
+        (faction.id===FACTIONS.PLAYER||faction.id===FACTIONS.AI)&&
+        fallbackId&&
+        byId.has(fallbackId)&&
+        !assigned.has(fallbackId)
+      ){
+        startId=fallbackId;
+      }else{
+        continue;
+      }
+    }
+
+    assigned.add(startId);
+    finalized.push({
+      id:faction.id,
+      startVillageId:startId,
+      type:faction.type
+    });
+  }
+
+  const fallbackPlayer=finalized.find(item=>item.id===FACTIONS.PLAYER);
+  const fallbackAi=finalized.find(item=>item.id===FACTIONS.AI);
+
+  if(!fallbackPlayer||!fallbackAi){
+    finalized.length=0;
+    finalized.push(
+      {id:FACTIONS.PLAYER,startVillageId:"P0",type:"player"},
+      {id:FACTIONS.AI,startVillageId:"A0",type:"ai"}
+    );
+  }
+
+  for(const village of villageTemplate){
+    village.owner=FACTIONS.NEUTRAL;
+  }
+
+  for(const faction of finalized){
+    const village=byId.get(faction.startVillageId);
+    if(village){
+      village.owner=faction.id;
+    }
+  }
+
+  const initializedIds=new Set(finalized.map(item=>item.id));
+  const aiInitialized=finalized.filter(item=>item.type==="ai").length;
+  selectedAiCount=Math.max(1,aiInitialized);
+
+  runtimeActiveFactions=getRuntimeFactions().map(faction=>{
+    const initialized=initializedIds.has(faction.id);
+    const finalizedStart=finalized.find(item=>item.id===faction.id)?.startVillageId||"";
+    const isPlayer=faction.type==="player";
+    const simulationEnabled=initialized&&(
+      isPlayer||faction.type==="ai"
+    );
+
+    return Object.assign({},faction,{
+      configured:initialized,
+      initialized,
+      active:initialized,
+      pendingStart:false,
+      simulationEnabled,
+      startVillageId:initialized?finalizedStart:""
+    });
+  });
+
+  if(aiCountSelect){
+    aiCountSelect.value=String(selectedAiCount);
+  }
+}
+
+function sanitizeRuntimeFactionsAfterInitialization(){
+  const validVillageIds=new Set(villageTemplate.map(village=>village.id));
+  const seenStarts=new Set();
+
+  runtimeActiveFactions=runtimeActiveFactions.map(faction=>{
+    if(!faction.initialized||!faction.active){
+      return Object.assign({},faction,{
+        simulationEnabled:false,
+        pendingStart:false,
+        startVillageId:""
+      });
+    }
+
+    const startId=String(faction.startVillageId||"");
+    const ownsVillage=factionHasRelevantVillage(faction.id);
+    const hasValidStart=startId&&validVillageIds.has(startId)&&!seenStarts.has(startId);
+    if(hasValidStart)seenStarts.add(startId);
+
+    return Object.assign({},faction,{
+      startVillageId:hasValidStart?startId:"",
+      simulationEnabled:isPlayerFaction(faction.id)?true:Boolean(ownsVillage),
+      pendingStart:false
+    });
+  });
+}
 
 const GAME_BALANCE = {
   targetMinutes:[20,30],
@@ -5934,11 +6344,15 @@ let aiFaction="empire";
 let fogEnabled=true;
 
 function factionData(faction){
-  return FACTIONS_DATA[
-    faction===FACTIONS.PLAYER
-      ? playerFaction
-      : aiFaction
-  ];
+  if(isPlayerFaction(faction)){
+    return FACTIONS_DATA[playerFaction];
+  }
+
+  if(isAiFaction(faction)){
+    return FACTIONS_DATA[aiFaction];
+  }
+
+  return FACTIONS_DATA[aiFaction];
 }
 
 function factionBonus(faction,key,fallback=1){
@@ -5946,7 +6360,9 @@ function factionBonus(faction,key,fallback=1){
 }
 
 function factionPrimaryColor(faction){
-  return factionData(faction)?.color || COLORS[faction];
+  const runtimeColor=runtimeFactionById(faction)?.color;
+  if(runtimeColor)return runtimeColor;
+  return factionData(faction)?.color || COLORS[faction] || COLORS.neutral;
 }
 
 function factionSecondaryColor(faction){
@@ -6435,6 +6851,388 @@ function generatorChoice(seed,count,channel=0){
 
 function villageIdSeed(id){
   return hashText(String(id||""));
+}
+
+const START_ASSIGNMENT_MAX_ATTEMPTS=6;
+const START_ASSIGNMENT_MIN_GRAPH_DISTANCE=2;
+
+function startPositionSelectionSalt(aiCount,attempt=0){
+  return normalizeMapSeed(
+    mapSeed^
+    Math.imul(hashText(selectedMapSize||"medium"),2246822519)^
+    Math.imul(hashText(selectedMapPresetId||"standard"),1597334677)^
+    Math.imul((Math.max(1,Number(aiCount)||1)>>>0),1103515245)^
+    Math.imul(hashText("start-positions"),668265263)^
+    Math.imul(((attempt+1)>>>0),374761393)
+  );
+}
+
+function deterministicUnitFloat(seed,channel=0){
+  const mixed=(seed>>>0)+Math.imul((channel>>>0)+1,1597334677);
+  const value=Math.sin(mixed*.0000019+13.17)*43758.5453123;
+  return value-Math.floor(value);
+}
+
+function startAdjacencyMap(template,roadEntries){
+  return graphAdjacency(template,roadEntries);
+}
+
+function bfsDistancesFrom(startId,adjacency){
+  const distances=new Map();
+  const queue=[startId];
+  distances.set(startId,0);
+
+  while(queue.length){
+    const current=queue.shift();
+    const baseDistance=distances.get(current)||0;
+
+    for(const neighbor of adjacency.get(current)||[]){
+      if(distances.has(neighbor))continue;
+      distances.set(neighbor,baseDistance+1);
+      queue.push(neighbor);
+    }
+  }
+
+  return distances;
+}
+
+function nearestLakeDistance(village){
+  const lakes=Array.isArray(WATER_LAYER?.lakes)
+    ? WATER_LAYER.lakes
+    : [];
+  if(!lakes.length)return Infinity;
+
+  let best=Infinity;
+
+  for(const lake of lakes){
+    const rx=Math.max(1,Number(lake.rx)||1);
+    const ry=Math.max(1,Number(lake.ry)||1);
+    const dx=Math.abs(village.x-lake.x)-rx;
+    const dy=Math.abs(village.y-lake.y)-ry;
+    const outsideX=Math.max(0,dx);
+    const outsideY=Math.max(0,dy);
+    const distance=Math.hypot(outsideX,outsideY);
+    if(distance<best)best=distance;
+  }
+
+  return best;
+}
+
+function nearbyReliefPenalty(village){
+  const features=Array.isArray(RELIEF_LAYER?.features)
+    ? RELIEF_LAYER.features
+    : [];
+  if(!features.length)return 0;
+
+  const nearby=features.filter(feature=>
+    Math.hypot(
+      (feature.x||0)-village.x,
+      (feature.y||0)-village.y
+    )<140
+  ).length;
+
+  return Math.min(6,nearby);
+}
+
+function villageCandidateMetrics(village,adjacency,templateById){
+  const degree=adjacency.get(village.id)?.size||0;
+  const nearNeutral2=neutralReachInSteps(village.id,adjacency,[...templateById.values()],2);
+  const nearNeutral3=neutralReachInSteps(village.id,adjacency,[...templateById.values()],3);
+
+  const edgeMargin=Math.min(
+    village.x,
+    worldWidth-village.x,
+    village.y,
+    worldHeight-village.y
+  );
+
+  const edgePenalty=edgeMargin<58
+    ? 1.0
+    : edgeMargin<82
+      ? .45
+      : 0;
+
+  const lakeDistance=nearestLakeDistance(village);
+  const lakePenalty=lakeDistance<16
+    ? .95
+    : lakeDistance<30
+      ? .48
+      : 0;
+
+  const reliefPenalty=nearbyReliefPenalty(village)*.05;
+
+  return {
+    degree,
+    nearNeutral2,
+    nearNeutral3,
+    edgePenalty,
+    lakePenalty,
+    reliefPenalty
+  };
+}
+
+function buildStartVillageCandidates(template,roadEntries){
+  const adjacency=startAdjacencyMap(template,roadEntries);
+  const templateById=new Map(template.map(village=>[village.id,village]));
+  const candidates=[];
+
+  for(const village of template){
+    const degree=adjacency.get(village.id)?.size||0;
+    if(degree<1)continue;
+
+    const metrics=villageCandidateMetrics(village,adjacency,templateById);
+    const blockedByTerrain=metrics.edgePenalty>=1&&metrics.lakePenalty>=.95;
+    if(blockedByTerrain)continue;
+
+    candidates.push({village,metrics});
+  }
+
+  return {candidates,adjacency,templateById};
+}
+
+function graphMinDistance(candidateId,selectedIds,distanceIndex){
+  if(!selectedIds.length)return Infinity;
+
+  let best=Infinity;
+
+  for(const selectedId of selectedIds){
+    const dist=
+      distanceIndex.get(selectedId)?.get(candidateId)??
+      distanceIndex.get(candidateId)?.get(selectedId)??
+      Infinity;
+    if(dist<best)best=dist;
+  }
+
+  return best;
+}
+
+function euclideanMinDistance(candidate,selectedVillages){
+  if(!selectedVillages.length)return Infinity;
+
+  let best=Infinity;
+  for(const village of selectedVillages){
+    const dist=Math.hypot(candidate.x-village.x,candidate.y-village.y);
+    if(dist<best)best=dist;
+  }
+  return best;
+}
+
+function resourceAccessScore(villageId,adjacency,templateById){
+  const queue=[{id:villageId,depth:0}];
+  const visited=new Set([villageId]);
+  const resources=new Set();
+
+  while(queue.length){
+    const current=queue.shift();
+    if(current.depth>=3)continue;
+
+    for(const neighbor of adjacency.get(current.id)||[]){
+      if(visited.has(neighbor))continue;
+      visited.add(neighbor);
+      const village=templateById.get(neighbor);
+      if(village?.owner===FACTIONS.NEUTRAL){
+        const resource=
+          village.specialResource||
+          generatedResourceMap.get(village.id)||
+          null;
+        if(resource)resources.add(resource);
+      }
+      queue.push({id:neighbor,depth:current.depth+1});
+    }
+  }
+
+  return resources.size;
+}
+
+function p0PreferenceScore(candidate,seedSalt){
+  const village=candidate.village;
+  const metrics=candidate.metrics;
+  const legacyBonus=village.id==="P0"?10:0;
+  const degreeScore=Math.min(6,metrics.degree)*1.35;
+  const neutralScore=metrics.nearNeutral2*1.7+metrics.nearNeutral3*.35;
+  const safetyPenalty=(metrics.edgePenalty+metrics.lakePenalty+metrics.reliefPenalty)*4.2;
+  const jitter=deterministicUnitFloat(seedSalt,villageIdSeed(village.id))*.35;
+
+  return legacyBonus+degreeScore+neutralScore-safetyPenalty+jitter;
+}
+
+function expansionFactionScore(candidate,selectedIds,selectedVillages,distanceIndex,adjacency,templateById,seedSalt){
+  const village=candidate.village;
+  const metrics=candidate.metrics;
+  const minGraphDistance=graphMinDistance(village.id,selectedIds,distanceIndex);
+  const minWorldDistance=euclideanMinDistance(village,selectedVillages);
+
+  if(
+    Number.isFinite(minGraphDistance)&&
+    minGraphDistance<START_ASSIGNMENT_MIN_GRAPH_DISTANCE
+  ){
+    return -Infinity;
+  }
+
+  const distanceCore=(Number.isFinite(minGraphDistance)?minGraphDistance:99)*12;
+  const neutralScore=metrics.nearNeutral2*2.8+metrics.nearNeutral3*.55;
+  const degreeScore=Math.min(6,metrics.degree)*1.6;
+  const resourceScore=resourceAccessScore(village.id,adjacency,templateById)*1.9;
+  const spaceScore=(Number.isFinite(minWorldDistance)?minWorldDistance:220)/70;
+  const terrainPenalty=(metrics.edgePenalty+metrics.lakePenalty+metrics.reliefPenalty)*5.4;
+  const jitter=deterministicUnitFloat(seedSalt,villageIdSeed(village.id)+23)*.22;
+
+  return (
+    distanceCore+
+    neutralScore+
+    degreeScore+
+    resourceScore+
+    spaceScore-
+    terrainPenalty+
+    jitter
+  );
+}
+
+function buildDistanceIndex(template,adjacency){
+  const index=new Map();
+  for(const village of template){
+    index.set(village.id,bfsDistancesFrom(village.id,adjacency));
+  }
+  return index;
+}
+
+function selectConfiguredStartVillageIds(aiCount,attempt=0){
+  const template=[...villageTemplate];
+  if(!template.length||!roads.length)return null;
+
+  const desiredIds=[
+    FACTIONS.PLAYER,
+    ...RUNTIME_FACTION_BLUEPRINTS
+      .filter(entry=>entry.type==="ai")
+      .slice(0,Math.max(1,aiCount))
+      .map(entry=>entry.id)
+  ];
+
+  const {candidates,adjacency,templateById}=buildStartVillageCandidates(
+    template,
+    roads
+  );
+  if(candidates.length<desiredIds.length)return null;
+
+  const byId=new Map(candidates.map(entry=>[entry.village.id,entry]));
+  const distanceIndex=buildDistanceIndex(template,adjacency);
+  const seedSalt=startPositionSelectionSalt(aiCount,attempt);
+
+  const selectedIds=[];
+  const selectedVillages=[];
+
+  // 1v1-Kompatibilität: vorhandene P0/A0-Starts bleiben bevorzugt, wenn valide.
+  if(
+    aiCount===1&&
+    byId.has("P0")&&
+    byId.has("A0")&&
+    (distanceIndex.get("P0")?.get("A0")||0)>=START_ASSIGNMENT_MIN_GRAPH_DISTANCE
+  ){
+    return {
+      [FACTIONS.PLAYER]:"P0",
+      [FACTIONS.AI]:"A0"
+    };
+  }
+
+  const p0Candidate=[...candidates]
+    .sort((a,b)=>
+      p0PreferenceScore(b,seedSalt)-
+      p0PreferenceScore(a,seedSalt)
+    )[0]?.village;
+
+  if(!p0Candidate)return null;
+
+  selectedIds.push(p0Candidate.id);
+  selectedVillages.push(p0Candidate);
+
+  const result={
+    [FACTIONS.PLAYER]:p0Candidate.id
+  };
+
+  const aiIds=desiredIds.filter(id=>id!==FACTIONS.PLAYER);
+
+  for(const factionId of aiIds){
+    const pool=candidates
+      .filter(entry=>!selectedIds.includes(entry.village.id))
+      .map(entry=>({
+        entry,
+        score:expansionFactionScore(
+          entry,
+          selectedIds,
+          selectedVillages,
+          distanceIndex,
+          adjacency,
+          templateById,
+          seedSalt
+        )
+      }))
+      .filter(item=>Number.isFinite(item.score))
+      .sort((a,b)=>b.score-a.score);
+
+    const chosen=pool[0]?.entry?.village;
+    if(!chosen)return null;
+
+    selectedIds.push(chosen.id);
+    selectedVillages.push(chosen);
+    result[factionId]=chosen.id;
+  }
+
+  return result;
+}
+
+function applyConfiguredStartVillageIds(startIdsByFaction,aiCount,sizeKey){
+  configureActiveFactions(aiCount,sizeKey);
+
+  const assigned=new Set();
+  runtimeActiveFactions=runtimeActiveFactions.map(faction=>{
+    const assignedId=startIdsByFaction?.[faction.id]||"";
+    const normalizedStartId=
+      faction.configured&&assignedId&&!assigned.has(assignedId)
+        ? assignedId
+        : "";
+
+    if(normalizedStartId)assigned.add(normalizedStartId);
+
+    return Object.assign({},faction,{
+      startVillageId:normalizedStartId
+    });
+  });
+
+  return runtimeActiveFactions;
+}
+
+function assignConfiguredFactionStartVillages(aiCount,sizeKey){
+  const normalizedAiCount=normalizeSelectedAiCount(aiCount,sizeKey);
+  const maxAttempts=START_ASSIGNMENT_MAX_ATTEMPTS;
+
+  for(let candidateAiCount=normalizedAiCount;candidateAiCount>=1;candidateAiCount--){
+    for(let attempt=0;attempt<maxAttempts;attempt++){
+      const assignments=selectConfiguredStartVillageIds(candidateAiCount,attempt);
+      if(!assignments)continue;
+
+      applyConfiguredStartVillageIds(assignments,candidateAiCount,sizeKey);
+      return {
+        success:true,
+        aiCount:candidateAiCount,
+        attempts:attempt+1
+      };
+    }
+  }
+
+  applyConfiguredStartVillageIds(
+    {
+      [FACTIONS.PLAYER]:"P0",
+      [FACTIONS.AI]:"A0"
+    },
+    1,
+    sizeKey
+  );
+
+  return {
+    success:false,
+    aiCount:1,
+    attempts:maxAttempts
+  };
 }
 
 function activeMapGeneratorMeta(){
@@ -8319,6 +9117,7 @@ const VILLAGE_NAMES = [
 ];
 
 let selectedMapSize="medium";
+let selectedAiCount=1;
 let selectedMapPresetId="standard";
 let selectedMapSeedInput="";
 let villageTemplate=[];
@@ -9155,6 +9954,7 @@ let running=false, gameOver=false, gameSpeed=0.6, lastTime=performance.now(), wo
 
 let matchStatistics=null;
 let finalMatchStatistics=null;
+let lastMatchStatisticsWorldTime=-Infinity;
 
 function createFactionMatchStatistics(){
   return {
@@ -9195,6 +9995,21 @@ function createFactionMatchStatistics(){
 }
 
 function createMatchStatistics(){
+  const factionEntries=Object.fromEntries(
+    getInitializedFactions().map(faction=>[
+      faction.id,
+      createFactionMatchStatistics()
+    ])
+  );
+
+  if(!factionEntries[FACTIONS.PLAYER]){
+    factionEntries[FACTIONS.PLAYER]=createFactionMatchStatistics();
+  }
+
+  if(!factionEntries[FACTIONS.AI]){
+    factionEntries[FACTIONS.AI]=createFactionMatchStatistics();
+  }
+
   return {
     version:GAME_VERSION,
     startedAt:Date.now(),
@@ -9205,19 +10020,64 @@ function createMatchStatistics(){
     aiFaction,
     difficulty:aiDifficulty,
     mapSize:selectedMapSize,
-    player:createFactionMatchStatistics(),
-    ai:createFactionMatchStatistics()
+    player:factionEntries[FACTIONS.PLAYER],
+    ai:factionEntries[FACTIONS.AI],
+    factions:factionEntries
   };
+}
+
+function mergeFactionStatistics(target,source){
+  if(!target||!source)return;
+
+  target.settlementsCaptured+=source.settlementsCaptured;
+  target.settlementsLost+=source.settlementsLost;
+  target.neutralSettlementsCaptured+=source.neutralSettlementsCaptured;
+  target.enemySettlementsCaptured+=source.enemySettlementsCaptured;
+  target.capitalsCaptured+=source.capitalsCaptured;
+  target.highestSettlementCount=Math.max(target.highestSettlementCount,source.highestSettlementCount);
+  target.currentSettlementCount+=source.currentSettlementCount;
+
+  for(const type of Object.keys(target.recruited)){
+    target.recruited[type]+=source.recruited[type]||0;
+  }
+
+  target.militiaMobilized+=source.militiaMobilized;
+  target.unitsDefeated+=source.unitsDefeated;
+  target.unitsLost+=source.unitsLost;
+  target.damageDealt+=source.damageDealt;
+  target.damageReceived+=source.damageReceived;
+  target.largestArmy=Math.max(target.largestArmy,source.largestArmy);
+  target.armiesCreated+=source.armiesCreated;
+
+  if(armyRankIndex(source.highestArmyRank)>armyRankIndex(target.highestArmyRank)){
+    target.highestArmyRank=source.highestArmyRank;
+  }
+
+  for(const key of ["gold","wood","stone"]){
+    target.resourcesProduced[key]+=source.resourcesProduced[key]||0;
+  }
+
+  target.farmersBorn+=source.farmersBorn;
+  target.highestPopulation=Math.max(target.highestPopulation,source.highestPopulation);
+  target.settlementTierUpgrades+=source.settlementTierUpgrades;
+  target.economyBuildingsBuilt+=source.economyBuildingsBuilt;
+  target.militaryBuildingsBuilt+=source.militaryBuildingsBuilt;
+  target.roadsUpgraded+=source.roadsUpgraded;
+  target.structuresBuilt+=source.structuresBuilt;
 }
 
 function statisticsForFaction(faction){
   if(!matchStatistics)return null;
+  if(matchStatistics.factions&&matchStatistics.factions[faction]){
+    return matchStatistics.factions[faction];
+  }
   if(faction===FACTIONS.PLAYER)return matchStatistics.player;
   if(faction===FACTIONS.AI)return matchStatistics.ai;
   return null;
 }
 
 function statisticsFactionKey(faction){
+  if(matchStatistics?.factions?.[faction])return faction;
   if(faction===FACTIONS.PLAYER)return "player";
   if(faction===FACTIONS.AI)return "ai";
   return null;
@@ -9294,12 +10154,19 @@ function armyRankIndex(rankId){
   return ARMY_RANKS.findIndex(rank=>rank.id===rankId);
 }
 
-function updateLiveMatchStatistics(){
+function updateLiveMatchStatistics(force=false){
   if(!matchStatistics)return;
 
   matchStatistics.durationSeconds=worldTime;
 
-  for(const faction of [FACTIONS.PLAYER,FACTIONS.AI]){
+  if(!force&&worldTime-lastMatchStatisticsWorldTime<.45){
+    return;
+  }
+  lastMatchStatisticsWorldTime=worldTime;
+
+  const trackedFactions=getInitializedFactions().map(faction=>faction.id);
+
+  for(const faction of trackedFactions){
     const stats=statisticsForFaction(faction);
     if(!stats)continue;
 
@@ -9344,12 +10211,23 @@ function updateLiveMatchStatistics(){
       }
     }
   }
+
+  const playerStats=statisticsForFaction(FACTIONS.PLAYER);
+  if(playerStats)matchStatistics.player=playerStats;
+
+  const enemySummary=createFactionMatchStatistics();
+  for(const faction of getInitializedEnemyFactions()){
+    const stats=statisticsForFaction(faction.id);
+    if(!stats)continue;
+    mergeFactionStatistics(enemySummary,stats);
+  }
+  matchStatistics.ai=enemySummary;
 }
 
 function finalizeMatchStatistics(winner){
   if(!matchStatistics)return;
 
-  updateLiveMatchStatistics();
+  updateLiveMatchStatistics(true);
   matchStatistics.endedAt=Date.now();
   matchStatistics.durationSeconds=worldTime;
   matchStatistics.winner=winner;
@@ -9376,6 +10254,64 @@ let playerUnitProgress=createUnitProgress(), aiUnitProgress=createUnitProgress()
 let aiDifficulty=3, aiThinkTimer=0, seasonIndex=0, seasonTimer=0, baseIncomeTimer=0, nextUnitId=1;
 let exploredPlayer=new Set(), exploredAi=new Set();
 let playerMorale=70, aiMorale=70, moraleTimer=0;
+let aiRoundRobinIndex=0;
+
+const factionResourceContainers=new Map();
+const factionProgressContainers=new Map();
+const factionMoraleContainers=new Map();
+
+function syncPreparedFactionStateContainers(){
+  refreshRuntimeActiveFactions();
+
+  factionResourceContainers.set(FACTIONS.PLAYER,playerRes);
+  factionResourceContainers.set(FACTIONS.AI,aiRes);
+
+  factionProgressContainers.set(FACTIONS.PLAYER,playerUnitProgress);
+  factionProgressContainers.set(FACTIONS.AI,aiUnitProgress);
+
+  factionMoraleContainers.set(FACTIONS.PLAYER,playerMorale);
+  factionMoraleContainers.set(FACTIONS.AI,aiMorale);
+
+  for(const [factionId] of [...factionResourceContainers.entries()]){
+    if(factionId!==FACTIONS.PLAYER&&factionId!==FACTIONS.AI){
+      factionResourceContainers.delete(factionId);
+    }
+  }
+
+  for(const [factionId] of [...factionProgressContainers.entries()]){
+    if(factionId!==FACTIONS.PLAYER&&factionId!==FACTIONS.AI){
+      factionProgressContainers.delete(factionId);
+    }
+  }
+
+  for(const [factionId] of [...factionMoraleContainers.entries()]){
+    if(factionId!==FACTIONS.PLAYER&&factionId!==FACTIONS.AI){
+      factionMoraleContainers.delete(factionId);
+    }
+  }
+
+  for(const faction of getActiveFactions()){
+    if(!factionResourceContainers.has(faction.id)){
+      factionResourceContainers.set(
+        faction.id,
+        {gold:0,wood:0,stone:0}
+      );
+    }
+
+    if(!factionProgressContainers.has(faction.id)){
+      factionProgressContainers.set(
+        faction.id,
+        createUnitProgress()
+      );
+    }
+
+    if(!factionMoraleContainers.has(faction.id)){
+      factionMoraleContainers.set(faction.id,70);
+    }
+  }
+}
+
+syncPreparedFactionStateContainers();
 
 function roadKey(a,b){ return [a,b].sort().join("|"); }
 function getVillage(id){ return villages.find(v=>v.id===id); }
@@ -9407,15 +10343,23 @@ function addResource(res,type,amount){
 
   res[type]+=amount;
 
-  if(res===playerRes){
+  let factionId=null;
+
+  for(const [id,container] of factionResourceContainers){
+    if(container===res){
+      factionId=id;
+      break;
+    }
+  }
+
+  if(!factionId){
+    if(res===playerRes)factionId=FACTIONS.PLAYER;
+    else if(res===aiRes)factionId=FACTIONS.AI;
+  }
+
+  if(factionId){
     recordProducedResource(
-      FACTIONS.PLAYER,
-      type,
-      amount
-    );
-  }else if(res===aiRes){
-    recordProducedResource(
-      FACTIONS.AI,
+      factionId,
       type,
       amount
     );
@@ -9463,7 +10407,10 @@ function transferVillageStock(village, faction){
 }
 
 function factionUnitProgress(faction){
-  return faction===FACTIONS.PLAYER ? playerUnitProgress : aiUnitProgress;
+  if(factionProgressContainers.has(faction)){
+    return factionProgressContainers.get(faction);
+  }
+  return isPlayerFaction(faction) ? playerUnitProgress : aiUnitProgress;
 }
 
 function getUnitLevel(faction,type){
@@ -9722,6 +10669,25 @@ function normalizeMapPresetId(value){
     : "standard";
 }
 
+function syncAiCountSelectionForSize(sizeKey,value){
+  const normalized=normalizeSelectedAiCount(value,sizeKey);
+  selectedAiCount=normalized;
+  configureActiveFactions(normalized,sizeKey);
+
+  if(aiCountSelect&&aiCountSelect.value!==String(normalized)){
+    aiCountSelect.value=String(normalized);
+  }
+
+  return normalized;
+}
+
+function selectedAiCountFromMenu(sizeKey){
+  return syncAiCountSelectionForSize(
+    sizeKey,
+    aiCountSelect?.value??selectedAiCount
+  );
+}
+
 function selectedMapPreset(){
   return getMapPresetById(selectedMapPresetId);
 }
@@ -9844,6 +10810,17 @@ function currentSerializableMapGenerationState(){
     mapSeed,
     mapPresetId:selectedMapPresetId,
     selectedMapSize,
+    selectedAiCount,
+    factions:getRuntimeFactions().map(faction=>({
+      id:faction.id,
+      type:faction.type,
+      configured:Boolean(faction.configured),
+      active:Boolean(faction.active),
+      initialized:Boolean(faction.initialized),
+      simulationEnabled:Boolean(faction.simulationEnabled),
+      pendingStart:Boolean(faction.pendingStart),
+      startVillageId:String(faction.startVillageId||"")
+    })),
     generatorVersion:
       runtimeConfig?.generatorVersion||
       MAP_GENERATOR_VERSION
@@ -10016,6 +10993,12 @@ function emergencyInitializeStartMenu(){
     mapSizeSelect.value=selectedMapSize;
   }
 
+  if(aiCountSelect){
+    aiCountSelect.value=String(
+      syncAiCountSelectionForSize(selectedMapSize,selectedAiCount)
+    );
+  }
+
   selectedMapPresetId=normalizeMapPresetId(selectedMapPresetId);
   populateMapPresetSelect();
 
@@ -10052,11 +11035,20 @@ function emergencyInitializeStartMenu(){
   });
 
   mapSizeSelect?.addEventListener("change",()=>{
+    selectedMapSize=mapSizeSelect.value;
+    syncAiCountSelectionForSize(selectedMapSize,selectedAiCount);
     safeStartupStep(
       "Kartenvorschau",
       updateMapSizePreview
     );
     updateActiveMapSeedBadge(mapSeedInput?.value||selectedMapSeedInput);
+  });
+
+  aiCountSelect?.addEventListener("change",()=>{
+    syncAiCountSelectionForSize(
+      mapSizeSelect?.value||selectedMapSize,
+      aiCountSelect.value
+    );
   });
 
   mapPresetSelect?.addEventListener("change",()=>{
@@ -10104,6 +11096,9 @@ function initializeStartMenu(){
   selectedMapPresetId=normalizeMapPresetId(selectedMapPresetId);
   populateMapPresetSelect();
   mapSizeSelect.value=selectedMapSize;
+  aiCountSelect.value=String(
+    syncAiCountSelectionForSize(selectedMapSize,selectedAiCount)
+  );
   mapPresetSelect.value=selectedMapPresetId;
   mapSeedInput.value=selectedMapSeedInput;
   updateMapSizePreview();
@@ -10127,7 +11122,16 @@ function initializeStartMenu(){
   playerFactionSelect.addEventListener("change",updateMapSizePreview);
   mapSizeSelect.addEventListener("change",updateMapSizePreview);
   mapSizeSelect.addEventListener("change",()=>{
+    selectedMapSize=mapSizeSelect.value;
+    syncAiCountSelectionForSize(selectedMapSize,selectedAiCount);
     updateActiveMapSeedBadge(mapSeedInput.value||selectedMapSeedInput);
+  });
+
+  aiCountSelect.addEventListener("change",()=>{
+    syncAiCountSelectionForSize(
+      mapSizeSelect.value||selectedMapSize,
+      aiCountSelect.value
+    );
   });
 
   mapPresetSelect.addEventListener("change",()=>{
@@ -11166,9 +12170,9 @@ function sendPlayerAutoReinforcement(origin){
   );
 }
 
-function chooseAiFrontTarget(origin){
+function chooseAiFrontTarget(origin,factionId){
   const options=getConnected(origin)
-    .filter(target=>target.owner!==FACTIONS.AI);
+    .filter(target=>target.owner!==factionId);
 
   if(!options.length)return null;
 
@@ -11194,7 +12198,7 @@ function sendAiCoordinatedArmy(origin){
   if(villageIsUnderAttack(origin))return false;
   if(!isFrontlineVillage(origin))return false;
 
-  const target=chooseAiFrontTarget(origin);
+  const target=chooseAiFrontTarget(origin,origin.owner);
   if(!target)return false;
 
   const aggression=
@@ -11221,8 +12225,8 @@ function sendAiCoordinatedArmy(origin){
   );
 }
 
-function reinforceAiThreatenedVillage(){
-  const owned=villages.filter(v=>v.owner===FACTIONS.AI);
+function reinforceAiThreatenedVillage(factionId){
+  const owned=villages.filter(v=>v.owner===factionId);
   const target=owned
     .filter(isFrontlineVillage)
     .map(v=>({v,score:villageFrontThreat(v)}))
@@ -11393,11 +12397,11 @@ const EMPIRE_LOGIC_RULES={
   frontHoldTime:7
 };
 
-let empireLogicTimer=0;
 let strategicIndexTimer=0;
-let aiRouteRefreshTimer=0;
 let strategicUnitIndex={hostile:new Map(),friendly:new Map()};
 let empireAdjacencyCache=null;
+const aiEmpireLogicTimerByFaction=new Map();
+const aiRouteRefreshTimerByFaction=new Map();
 
 function rebuildStrategicUnitIndex(){
   const hostileByOwner=new Map();
@@ -11486,8 +12490,8 @@ function shortestOwnedEmpirePath(origin,target,owner){
   return path.reverse();
 }
 
-function aiFrontScore(village){
-  if(village.owner!==FACTIONS.AI)return -Infinity;
+function aiFrontScore(village,factionId){
+  if(village.owner!==factionId)return -Infinity;
   const enemies=hostileNeighborCount(village);
   const threat=villageFrontThreat(village);
   const surplus=routeMilitarySurplus(village);
@@ -11495,17 +12499,17 @@ function aiFrontScore(village){
   return enemies*18+threat*4+surplus*.7-incoming*.45+village.tier*3;
 }
 
-function selectAiFronts(){
+function selectAiFronts(factionId){
   const candidates=villages
-    .filter(v=>v.owner===FACTIONS.AI&&isNaturalFrontline(v))
-    .sort((a,b)=>aiFrontScore(b)-aiFrontScore(a));
+    .filter(v=>v.owner===factionId&&isNaturalFrontline(v))
+    .sort((a,b)=>aiFrontScore(b,factionId)-aiFrontScore(a,factionId));
 
   const selected=new Set(
     candidates.slice(0,EMPIRE_LOGIC_RULES.maxAiAttackFronts).map(v=>v.id)
   );
 
   for(const village of villages){
-    if(village.owner!==FACTIONS.AI)continue;
+    if(village.owner!==factionId)continue;
     normalizeFrontState(village);
     village.aiFrontActive=selected.has(village.id);
     village.frontPriority=village.aiFrontActive;
@@ -11516,21 +12520,21 @@ function selectAiFronts(){
   return candidates;
 }
 
-function nearestAiFrontRoute(origin,fronts){
+function nearestAiFrontRoute(origin,fronts,factionId){
   let best=null;
   for(const front of fronts){
     if(front.id===origin.id)continue;
-    const path=shortestOwnedEmpirePath(origin,front,FACTIONS.AI);
+    const path=shortestOwnedEmpirePath(origin,front,factionId);
     if(!path.length)continue;
-    const score=path.length*10-aiFrontScore(front);
+    const score=path.length*10-aiFrontScore(front,factionId);
     if(!best||score<best.score)best={path,score,front};
   }
   return best;
 }
 
-function optimizeAiSupplyRoutes(fronts){
+function optimizeAiSupplyRoutes(fronts,factionId){
   const activeFronts=fronts.filter(v=>v.aiFrontActive);
-  const aiVillages=villages.filter(v=>v.owner===FACTIONS.AI);
+  const aiVillages=villages.filter(v=>v.owner===factionId);
 
   for(const village of aiVillages){
     normalizeVillageRoute(village);
@@ -11548,7 +12552,7 @@ function optimizeAiSupplyRoutes(fronts){
       continue;
     }
 
-    const best=nearestAiFrontRoute(village,activeFronts);
+    const best=nearestAiFrontRoute(village,activeFronts,factionId);
     if(!best){
       village.marchRoute=[];
       village.routeMode='collect';
@@ -11569,20 +12573,24 @@ function optimizeAiSupplyRoutes(fronts){
   }
 }
 
-function updateAiEmpireLogic(dt){
-  empireLogicTimer+=dt;
-  aiRouteRefreshTimer+=dt;
-  if(empireLogicTimer<EMPIRE_LOGIC_RULES.strategicInterval)return;
-  empireLogicTimer=0;
+function updateAiEmpireLogic(dt,factionId){
+  const currentLogic=(aiEmpireLogicTimerByFaction.get(factionId)||0)+dt;
+  const currentRoute=(aiRouteRefreshTimerByFaction.get(factionId)||0)+dt;
 
-  const fronts=selectAiFronts();
-  if(aiRouteRefreshTimer>=EMPIRE_LOGIC_RULES.routeRefreshInterval){
-    aiRouteRefreshTimer=0;
-    optimizeAiSupplyRoutes(fronts);
+  aiEmpireLogicTimerByFaction.set(factionId,currentLogic);
+  aiRouteRefreshTimerByFaction.set(factionId,currentRoute);
+
+  if(currentLogic<EMPIRE_LOGIC_RULES.strategicInterval)return;
+  aiEmpireLogicTimerByFaction.set(factionId,0);
+
+  const fronts=selectAiFronts(factionId);
+  if(currentRoute>=EMPIRE_LOGIC_RULES.routeRefreshInterval){
+    aiRouteRefreshTimerByFaction.set(factionId,0);
+    optimizeAiSupplyRoutes(fronts,factionId);
   }else{
     // Bedrohungsreaktion wird auch zwischen vollständigen Routenberechnungen sofort gepflegt.
     for(const village of villages){
-      if(village.owner!==FACTIONS.AI)continue;
+      if(village.owner!==factionId)continue;
       if(villageRouteIsThreatened(village))village.routePaused=true;
       else if(village.routePaused)village.routePaused=false;
     }
@@ -11600,7 +12608,10 @@ function updateFrontSystem(dt){
     updateFrontThreatPause(village,dt);
   }
 
-  updateAiEmpireLogic(dt);
+  const simulatedAiFactions=getSimulationReadyAiFactions();
+  for(const faction of simulatedAiFactions){
+    updateAiEmpireLogic(dt,faction.id);
+  }
   if(frontSystemTimer<1.2)return;
   frontSystemTimer=0;
 
@@ -11608,17 +12619,22 @@ function updateFrontSystem(dt){
     if(village.owner===FACTIONS.PLAYER)sendPlayerAutoReinforcement(village);
   }
 
-  reinforceAiThreatenedVillage();
+  for(const faction of simulatedAiFactions){
+    reinforceAiThreatenedVillage(faction.id);
+  }
 
   const activeFronts=villages
     .filter(v=>v.owner!==FACTIONS.NEUTRAL&&isFrontlineVillage(v))
     .sort((a,b)=>routeMilitarySurplus(b)-routeMilitarySurplus(a));
 
-  let aiWaves=0;
+  const aiWaveCountByFaction=new Map();
   for(const village of activeFronts){
-    if(village.owner===FACTIONS.AI){
-      if(!village.aiFrontActive||aiWaves>=EMPIRE_LOGIC_RULES.maxAiAttackFronts)continue;
-      if(processFrontAttackWave(village))aiWaves++;
+    if(isAiFaction(village.owner)){
+      const used=aiWaveCountByFaction.get(village.owner)||0;
+      if(!village.aiFrontActive||used>=EMPIRE_LOGIC_RULES.maxAiAttackFronts)continue;
+      if(processFrontAttackWave(village)){
+        aiWaveCountByFaction.set(village.owner,used+1);
+      }
     }else{
       processFrontAttackWave(village);
     }
@@ -11902,7 +12918,7 @@ function drawArmyOrderTargets(){
     ctx.strokeStyle=
       target.owner===FACTIONS.PLAYER
         ? "rgba(93,191,255,.95)"
-        : target.owner===FACTIONS.AI
+        : isAiFaction(target.owner)
           ? "rgba(255,92,73,.95)"
           : "rgba(245,214,115,.95)";
 
@@ -12315,7 +13331,7 @@ function updateMilitia(dt){
         militiaCount(village)===0 &&
         mobilizableFarmers(village)>=2
       ){
-        if(village.owner===FACTIONS.AI){
+        if(isAiFaction(village.owner)){
           mobilizeMilitia(village,false,true);
         }else if(village.autoMobilize){
           mobilizeMilitia(village,false,false);
@@ -12641,7 +13657,7 @@ function garrisonReserveTarget(village){
   if(village.isCapital)return base+5;
 
   if(
-    village.owner===FACTIONS.AI &&
+    isAiFaction(village.owner) &&
     worldTime<GAME_BALANCE.aiBuildPhase
   ){
     return Math.max(
@@ -12777,6 +13793,10 @@ function startConfiguredGame(){
   // 1) Kartengröße lesen.
   selectedMapSize=mapSizeSelect.value;
 
+  // 1b) KI-Anzahl lesen, größenabhängig validieren und Runtime-Fraktionen konfigurieren.
+  selectedAiCount=selectedAiCountFromMenu(selectedMapSize);
+  configureActiveFactions(selectedAiCount,selectedMapSize);
+
   // 2) Kartentyp lesen und validieren.
   selectedMapPresetId=normalizeMapPresetId(
     mapPresetSelect?.value||selectedMapPresetId
@@ -12808,6 +13828,23 @@ function startConfiguredGame(){
 
   // 6) Karte mit Größe + Seed erzeugen.
   generateMap(selectedMapSize,effectiveSeed);
+
+  // 6b) Startpositionen für konfigurierte Fraktionen deterministisch bestimmen.
+  const startAssignmentResult=assignConfiguredFactionStartVillages(
+    selectedAiCount,
+    selectedMapSize
+  );
+
+  if(startAssignmentResult.aiCount!==selectedAiCount){
+    selectedAiCount=startAssignmentResult.aiCount;
+    if(aiCountSelect){
+      aiCountSelect.value=String(selectedAiCount);
+    }
+  }
+
+  // 6c) Konfigurierte Fraktionen als Gameplay-Startfraktionen initialisieren.
+  initializeConfiguredGameplayFactions();
+  sanitizeRuntimeFactionsAfterInitialization();
 
   // 7) Tatsächlich aktiven Seed auslesen.
   const activeMeta=typeof getMapGeneratorMeta==="function"
@@ -13009,9 +14046,7 @@ function resetGame(){
   updateRouteEditorHud();
   nextArmyId=1;
   frontSystemTimer=0;
-  empireLogicTimer=0;
   strategicIndexTimer=0;
-  aiRouteRefreshTimer=0;
   strategicUnitIndex={hostile:new Map(),friendly:new Map()};
   empireAdjacencyCache=null;
   cityRoleAutomationTimer=0;
@@ -13021,6 +14056,10 @@ function resetGame(){
   nextUnitId=1;
   updateArmyOrderHud();
   running=false; gameOver=false; aiThinkTimer=0; aiDifficulty=Number(difficultySelect.value);
+  aiRoundRobinIndex=0;
+  setCurrentAiProcessingFaction(null);
+  aiEmpireLogicTimerByFaction.clear();
+  aiRouteRefreshTimerByFaction.clear();
   playerRes={gold:0,wood:0,stone:0};
   aiRes={gold:0,wood:0,stone:0};
   playerUnitProgress=createUnitProgress();
@@ -13028,22 +14067,26 @@ function resetGame(){
   baseIncomeTimer=0;
   playerMorale=70;
   aiMorale=70;
+  syncPreparedFactionStateContainers();
   moraleTimer=0;
   matchStatistics=createMatchStatistics();
+  lastMatchStatisticsWorldTime=-Infinity;
   finalMatchStatistics=null;
-  updateLiveMatchStatistics();
+  updateLiveMatchStatistics(true);
 
-  const playerCapital=getVillage("P0");
-  const aiCapital=getVillage("A0");
+  const playerStartVillageId=getPrimaryPlayerStartVillageId();
+  const aiStartVillageId=getPrimaryAiStartVillageId();
+  const playerCapital=getVillage(playerStartVillageId);
+  const aiCapital=getVillage(aiStartVillageId);
 
   exploredPlayer=new Set([
-    "P0",
-    ...getConnected(playerCapital).map(v=>v.id)
+    playerStartVillageId,
+    ...(playerCapital?getConnected(playerCapital).map(v=>v.id):[])
   ]);
 
   exploredAi=new Set([
-    "A0",
-    ...getConnected(aiCapital).map(v=>v.id)
+    aiStartVillageId,
+    ...(aiCapital?getConnected(aiCapital).map(v=>v.id):[])
   ]);
   if(typeof globalThis.resetExploredAreaMemory==='function'){
     globalThis.resetExploredAreaMemory();
@@ -13061,16 +14104,24 @@ function chooseTarget(v){
     const chosen=connected.find(x=>x.id===v.preferredTargetId);
     if(chosen)return chosen;
   }
-  const dir=v.owner===FACTIONS.PLAYER?1:-1;
+  const dir=isPlayerFaction(v.owner)?1:-1;
   const forward=connected.filter(x=>(x.layer-v.layer)*dir>0);
   const pool=forward.length?forward:connected;
   return pool[Math.floor(Math.random()*pool.length)];
 }
 
-function factionRes(f){ return f===FACTIONS.PLAYER?playerRes:aiRes; }
+function factionRes(f){
+  if(factionResourceContainers.has(f)){
+    return factionResourceContainers.get(f);
+  }
+  return isPlayerFaction(f)?playerRes:aiRes;
+}
 
 function factionMorale(faction){
-  return faction===FACTIONS.PLAYER?playerMorale:aiMorale;
+  if(factionMoraleContainers.has(faction)){
+    return factionMoraleContainers.get(faction);
+  }
+  return isPlayerFaction(faction)?playerMorale:aiMorale;
 }
 
 function setFactionMorale(faction,value){
@@ -13078,8 +14129,10 @@ function setFactionMorale(faction,value){
   const max=GAME_BALANCE.morale.maximum;
   const clamped=Math.max(min,Math.min(max,value));
 
-  if(faction===FACTIONS.PLAYER)playerMorale=clamped;
-  if(faction===FACTIONS.AI)aiMorale=clamped;
+  factionMoraleContainers.set(faction,clamped);
+
+  if(isPlayerFaction(faction))playerMorale=clamped;
+  if(isAiFaction(faction)&&faction===FACTIONS.AI)aiMorale=clamped;
 }
 
 function changeMorale(faction,amount){
@@ -13090,7 +14143,7 @@ function changeMorale(faction,amount){
 function moraleProductionMultiplier(faction){
   let morale=factionMorale(faction)/100;
 
-  if(faction===FACTIONS.AI&&aiDifficulty>=4){
+  if(isAiFaction(faction)&&aiDifficulty>=4){
     morale=Math.min(1,morale+(aiDifficulty-3)*.04);
   }
   const min=GAME_BALANCE.morale.productionMin;
@@ -13110,7 +14163,12 @@ function updateMorale(dt){
   if(moraleTimer<5)return;
   moraleTimer-=5;
 
-  for(const faction of [FACTIONS.PLAYER,FACTIONS.AI]){
+  const moraleFactions=[
+    FACTIONS.PLAYER,
+    ...getSimulationReadyAiFactions().map(faction=>faction.id)
+  ];
+
+  for(const faction of moraleFactions){
     const owned=villages.filter(v=>v.owner===faction);
     const economyCount=owned.filter(v=>v.economy!=="none").length;
     const underSiege=units.some(u=>
@@ -14107,7 +15165,7 @@ function resolveFriendlyArrival(u,v){
 
   const res=factionRes(u.faction);
   const mult=
-    u.faction===FACTIONS.AI
+    isAiFaction(u.faction)
       ? DIFFICULTIES[aiDifficulty].income
       : 1;
 
@@ -15402,19 +16460,13 @@ function chooseTrainableUnitType(village,preferredTypes){
   return "farmer";
 }
 
-function updateAi(dt){
-  aiThinkTimer+=dt;
+function updateAiForFaction(dt,factionId){
   const diff=DIFFICULTIES[aiDifficulty];
 
-  let phaseThink=diff.think;
-  if(worldTime<GAME_BALANCE.aiBuildPhase)phaseThink*=1.20;
-  else if(worldTime<GAME_BALANCE.aiSkirmishPhase)phaseThink*=1.05;
-
-  if(aiThinkTimer<phaseThink)return;
-  aiThinkTimer-=phaseThink;
-
-  const owned=villages.filter(v=>v.owner===FACTIONS.AI);
+  const owned=villages.filter(v=>v.owner===factionId);
   if(!owned.length)return;
+
+  const aiResources=factionRes(factionId);
 
   for(const village of owned){
     const desiredRole=chooseAiCityRole(village);
@@ -15443,7 +16495,7 @@ function updateAi(dt){
     .map(v=>{
       const hostileUnits=units.filter(u=>
         !u.dead&&
-        u.faction===FACTIONS.PLAYER&&
+        u.faction!==factionId&&
         u.targetId===v.id
       ).length;
 
@@ -15497,9 +16549,9 @@ function updateAi(dt){
     a.level-b.level ||
     a.village.tier-b.village.tier
   );
-  const economyBuild=economyCandidates.find(item=>canAfford(aiRes,item.cost));
+  const economyBuild=economyCandidates.find(item=>canAfford(aiResources,item.cost));
   if(economyBuild){
-    pay(aiRes,economyBuild.cost);
+    pay(aiResources,economyBuild.cost);
     v1813EnsureEconomyBuildings(economyBuild.village)[economyBuild.key]=economyBuild.nextLevel;
     const aiEconomyStats=statisticsForFaction(economyBuild.village.owner);
     if(aiEconomyStats)aiEconomyStats.economyBuildingsBuilt++;
@@ -15515,8 +16567,8 @@ function updateAi(dt){
     const facility=MILITARY_FACILITIES[facilityKey];
     const candidate=owned.find(v=>!v.militaryFacilities.includes(facilityKey));
 
-    if(candidate&&canAfford(aiRes,facility.cost)){
-      pay(aiRes,facility.cost);
+    if(candidate&&canAfford(aiResources,facility.cost)){
+      pay(aiResources,facility.cost);
       candidate.militaryFacilities.push(facilityKey);
       ensureFacilityLevels(candidate)[facilityKey]=1;
 
@@ -15541,8 +16593,8 @@ function updateAi(dt){
     if(candidate){
       const nextLevel=facilityLevel(candidate,facilityKey)+1;
       const cost=facilityUpgradeCost(facilityKey,nextLevel);
-      if(canAfford(aiRes,cost)){
-        pay(aiRes,cost);
+      if(canAfford(aiResources,cost)){
+        pay(aiResources,cost);
         ensureFacilityLevels(candidate)[facilityKey]=nextLevel;
         return;
       }
@@ -15553,10 +16605,10 @@ function updateAi(dt){
 
   // XP-Upgrades früher verwenden.
   for(const type of ["sword","archer","cavalry","farmer"]){
-    const cost=unitUpgradeCost(type,FACTIONS.AI);
+    const cost=unitUpgradeCost(type,factionId);
 
-    if(cost!==null&&getUnitXp(FACTIONS.AI,type)>=cost){
-      upgradeUnitType(FACTIONS.AI,type);
+    if(cost!==null&&getUnitXp(factionId,type)>=cost){
+      upgradeUnitType(factionId,type);
       return;
     }
   }
@@ -15566,7 +16618,7 @@ function updateAi(dt){
   const tierCandidates=owned
     .filter(v=>v.tier<3)
     .map(v=>({v,cost:TIERS[v.tier+1].cost}))
-    .filter(item=>canAfford(aiRes,item.cost))
+    .filter(item=>canAfford(aiResources,item.cost))
     .sort((a,b)=>
       a.v.tier-b.v.tier ||
       (garrisonTotal(b.v)-garrisonTotal(a.v))
@@ -15574,7 +16626,7 @@ function updateAi(dt){
 
   if(tierCandidates.length){
     const {v:tierCandidate,cost}=tierCandidates[0];
-    pay(aiRes,cost);
+    pay(aiResources,cost);
     tierCandidate.tier++;
 
     const aiTierStats=statisticsForFaction(tierCandidate.owner);
@@ -15585,8 +16637,8 @@ function updateAi(dt){
   }
 
   const aiRoads=roads.filter(([a,b])=>
-    getVillage(a).owner===FACTIONS.AI||
-    getVillage(b).owner===FACTIONS.AI
+    getVillage(a).owner===factionId||
+    getVillage(b).owner===factionId
   );
 
   // Wichtige Straßen schneller ausbauen.
@@ -15594,14 +16646,14 @@ function updateAi(dt){
     const state=getRoadState(a,b);
     const cost=roadUpgradeCost(state);
     const requiredTier=Math.max(1,(state.level||0)+1);
-    const aiEndpoint=[getVillage(a),getVillage(b)].find(v=>v&&v.owner===FACTIONS.AI&&v.tier>=requiredTier);
-    return !!aiEndpoint&&cost&&canAfford(aiRes,cost);
+    const aiEndpoint=[getVillage(a),getVillage(b)].find(v=>v&&v.owner===factionId&&v.tier>=requiredTier);
+    return !!aiEndpoint&&cost&&canAfford(aiResources,cost);
   });
 
   if(upgradeableRoad){
     const state=getRoadState(...upgradeableRoad);
     const cost=roadUpgradeCost(state);
-    pay(aiRes,cost);
+    pay(aiResources,cost);
     state.level=Math.min(2,(state.level||0)+1);
     return;
   }
@@ -15615,20 +16667,20 @@ function updateAi(dt){
       const va=getVillage(a);
       const vb=getVillage(b);
       return (
-        va.owner===FACTIONS.AI &&
-        vb.owner!==FACTIONS.AI
+        va.owner===factionId &&
+        vb.owner!==factionId
       )||(
-        vb.owner===FACTIONS.AI &&
-        va.owner!==FACTIONS.AI
+        vb.owner===factionId &&
+        va.owner!==factionId
       );
     });
 
-    if(undef&&aiRes.gold>=40&&aiRes.stone>=20){
-      aiRes.gold-=40;
-      aiRes.stone-=20;
+    if(undef&&aiResources.gold>=40&&aiResources.stone>=20){
+      aiResources.gold-=40;
+      aiResources.stone-=20;
       const s=getRoadState(...undef);
       s.structure="wall";
-      s.owner=FACTIONS.AI;
+      s.owner=factionId;
       s.hp=45;
       return;
     }
@@ -15637,14 +16689,53 @@ function updateAi(dt){
       getRoadState(a,b).structure==="wall"
     );
 
-    if(wall&&aiRes.gold>=70&&aiRes.stone>=30){
-      aiRes.gold-=70;
-      aiRes.stone-=30;
+    if(wall&&aiResources.gold>=70&&aiResources.stone>=30){
+      aiResources.gold-=70;
+      aiResources.stone-=30;
       const s=getRoadState(...wall);
       s.structure="tower";
-      s.owner=FACTIONS.AI;
+      s.owner=factionId;
       s.hp=70;
     }
+  }
+}
+
+function updateAi(dt){
+  aiThinkTimer+=dt;
+  const diff=DIFFICULTIES[aiDifficulty];
+
+  let phaseThink=diff.think;
+  if(worldTime<GAME_BALANCE.aiBuildPhase)phaseThink*=1.20;
+  else if(worldTime<GAME_BALANCE.aiSkirmishPhase)phaseThink*=1.05;
+
+  const aiFactions=getSimulationReadyAiFactions();
+  if(!aiFactions.length){
+    aiRoundRobinIndex=0;
+    setCurrentAiProcessingFaction(null);
+    return;
+  }
+
+  const perFactionTick=phaseThink/Math.max(1,aiFactions.length);
+  if(aiThinkTimer<perFactionTick)return;
+  const maxSteps=Math.min(2,aiFactions.length);
+  let steps=0;
+
+  while(aiThinkTimer>=perFactionTick&&steps<maxSteps){
+    aiThinkTimer-=perFactionTick;
+    if(aiRoundRobinIndex>=aiFactions.length){
+      aiRoundRobinIndex=0;
+    }
+
+    const selected=aiFactions[aiRoundRobinIndex%aiFactions.length];
+    aiRoundRobinIndex=(aiRoundRobinIndex+1)%aiFactions.length;
+
+    setCurrentAiProcessingFaction(selected.id);
+    try{
+      updateAiForFaction(dt,selected.id);
+    }finally{
+      setCurrentAiProcessingFaction(null);
+    }
+    steps++;
   }
 }
 
@@ -15657,12 +16748,12 @@ function activeFarmerSpawnTargets(village){
 
   // KI verwendet ihre strategische Route als ersten Spawnweg und greift sonst
   // erreichbare Nicht-KI-Nachbarn abwechselnd an.
-  if(village.owner===FACTIONS.AI&&ids.length===0){
+  if(isAiFaction(village.owner)&&ids.length===0){
     if(Array.isArray(village.marchRoute)&&village.marchRoute.length){
       ids=[village.marchRoute[0]];
     }else{
       ids=getConnected(village)
-        .filter(target=>target.owner!==FACTIONS.AI)
+        .filter(target=>target.owner!==village.owner)
         .map(target=>target.id);
     }
   }
@@ -15995,14 +17086,13 @@ function endScreenToMainMenu(){
 }
 
 function checkVictory(){
-  const playerAlive=villages.some(
-    village=>village.owner===FACTIONS.PLAYER
-  );
+  handleDefeatedAiFactions();
 
-  const aiAlive=villages.some(
-    village=>village.owner===FACTIONS.AI
-  );
+  const playerAlive=factionHasRelevantVillage(FACTIONS.PLAYER);
+  const aliveEnemies=getActiveEnemyFactions();
 
+  // Projektregel beibehalten: Falls beide Seiten im selben Tick ausscheiden,
+  // hat die Niederlage des Spielers Vorrang.
   if(!playerAlive&&!gameOver){
     running=false;
     gameOver=true;
@@ -16011,7 +17101,7 @@ function checkVictory(){
     showEndScreen();
   }
 
-  if(!aiAlive&&!gameOver){
+  if(aliveEnemies.length===0&&!gameOver){
     running=false;
     gameOver=true;
     finalizeMatchStatistics("player");
@@ -16020,16 +17110,122 @@ function checkVictory(){
   }
 }
 
+function aggregateEnemyUiData(){
+  const initializedEnemies=getInitializedEnemyFactions();
+  const activeEnemies=initializedEnemies.filter(faction=>
+    factionHasRelevantVillage(faction.id)
+  );
+  const activeEnemyIds=new Set(activeEnemies.map(faction=>faction.id));
+
+  let resources={gold:0,wood:0,stone:0};
+  for(const faction of activeEnemies){
+    const res=factionRes(faction.id)||{gold:0,wood:0,stone:0};
+    resources.gold+=Number(res.gold)||0;
+    resources.wood+=Number(res.wood)||0;
+    resources.stone+=Number(res.stone)||0;
+  }
+
+  const villagesCount=villages.filter(village=>
+    activeEnemyIds.has(village.owner)
+  ).length;
+
+  const unitsCount=units.filter(unit=>
+    !unit.dead&&activeEnemyIds.has(unit.faction)
+  ).length;
+
+  const averageTier=
+    villagesCount>0
+      ? villages
+        .filter(village=>activeEnemyIds.has(village.owner))
+        .reduce((sum,village)=>sum+village.tier+1,0)/villagesCount
+      : 0;
+
+  const averageMorale=
+    activeEnemies.length>0
+      ? activeEnemies.reduce((sum,faction)=>sum+factionMorale(faction.id),0)/activeEnemies.length
+      : 0;
+
+  const totalXp=activeEnemies.reduce((sum,faction)=>{
+    const progress=factionUnitProgress(faction.id);
+    return sum+Object.values(progress).reduce((total,item)=>total+(item?.xp||0),0);
+  },0);
+
+  return {
+    initializedEnemies,
+    activeEnemies,
+    resources,
+    villagesCount,
+    unitsCount,
+    averageTier,
+    averageMorale,
+    totalXp
+  };
+}
+
+function enemyFactionDisplayName(factionId){
+  const data=factionData(factionId);
+  const base=data?.name||factionId;
+  return `${base} (${factionId})`;
+}
+
+let enemyStatusListSignature="";
+
+function updateEnemyStatusList(enemyData=null){
+  const grid=document.querySelector(".ai-panel .stat-grid");
+  if(!grid)return;
+
+  let container=document.getElementById("enemyStatusList");
+  if(!container){
+    container=document.createElement("div");
+    container.id="enemyStatusList";
+    container.style.gridColumn="1 / -1";
+    container.style.display="grid";
+    container.style.gap="4px";
+    grid.appendChild(container);
+  }
+
+  const initializedEnemies=(enemyData?.initializedEnemies)||getInitializedEnemyFactions();
+  if(!initializedEnemies.length){
+    container.innerHTML="";
+    enemyStatusListSignature="";
+    return;
+  }
+
+  const ownerCounts=new Map();
+  for(const village of villages){
+    ownerCounts.set(village.owner,(ownerCounts.get(village.owner)||0)+1);
+  }
+
+  const signature=initializedEnemies.map(faction=>{
+    const villagesOwned=ownerCounts.get(faction.id)||0;
+    return `${faction.id}:${villagesOwned}`;
+  }).join("|");
+
+  if(signature===enemyStatusListSignature)return;
+  enemyStatusListSignature=signature;
+
+  container.innerHTML=initializedEnemies.map(faction=>{
+    const villagesOwned=ownerCounts.get(faction.id)||0;
+    const defeated=villagesOwned<=0;
+    const status=defeated?"besiegt":"aktiv";
+    const color=factionPrimaryColor(faction.id);
+    const name=enemyFactionDisplayName(faction.id);
+    return `<div style=\"display:flex;align-items:center;justify-content:space-between;font-size:.62rem;padding:2px 4px;border-radius:6px;background:rgba(255,255,255,.06);\"><span style=\"display:inline-flex;align-items:center;gap:6px;\"><i style=\"display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};\"></i>${name}</span><span>${villagesOwned} Dörfer · ${status}</span></div>`;
+  }).join("");
+}
+
 function updateMinimapFactionColors(){
   if(miniPlayerDot){
     miniPlayerDot.style.background=FACTIONS_DATA[playerFaction].color;
   }
   if(miniAiDot){
-    miniAiDot.style.background=FACTIONS_DATA[aiFaction].color;
+    const hostileFactionId=getHostileFactionsForPlayer()[0]?.id||FACTIONS.AI;
+    miniAiDot.style.background=factionPrimaryColor(hostileFactionId);
   }
 }
 
 function updateFactionUiColors(){
+  refreshRuntimeActiveFactions();
   updateMinimapFactionColors();
   const playerData=FACTIONS_DATA[playerFaction];
   const aiData=FACTIONS_DATA[aiFaction];
@@ -16070,7 +17266,8 @@ function setCompactStat(element,icon,value){
   element.dataset.value=value;
 }
 
-function updateCompactStatData(){
+function updateCompactStatData(enemyData){
+
   // Spieler: tatsächliche DOM-Elementnamen dieser Datei verwenden.
   setCompactStat(goldText,"🪙",Math.floor(playerRes.gold));
   setCompactStat(woodText,"🪵",Math.floor(playerRes.wood));
@@ -16100,32 +17297,30 @@ function updateCompactStatData(){
   setCompactStat(playerMoraleText,"❤",Math.round(playerMorale));
 
   // KI: tatsächliche DOM-Elementnamen dieser Datei verwenden.
-  setCompactStat(aiGoldText,"🪙",Math.floor(aiRes.gold));
-  setCompactStat(aiWoodText,"🪵",Math.floor(aiRes.wood));
-  setCompactStat(aiStoneText,"🪨",Math.floor(aiRes.stone));
+  setCompactStat(aiGoldText,"🪙",Math.floor(enemyData.resources.gold));
+  setCompactStat(aiWoodText,"🪵",Math.floor(enemyData.resources.wood));
+  setCompactStat(aiStoneText,"🪨",Math.floor(enemyData.resources.stone));
   setCompactStat(
     aiVillageText,
     "🏘",
-    villages.filter(v=>v.owner===FACTIONS.AI).length
+    enemyData.villagesCount
   );
   setCompactStat(
     aiUnitText,
     "⚔",
-    units.filter(u=>u.faction===FACTIONS.AI&&!u.dead).length
+    enemyData.unitsCount
   );
   setCompactStat(
     aiTierText,
     "🏰",
-    factionAverageTier(FACTIONS.AI).toFixed(1)
+    enemyData.averageTier.toFixed(1)
   );
   setCompactStat(
     aiXpText,
     "⭐",
-    Math.floor(
-      Object.values(aiUnitProgress).reduce((sum,progress)=>sum+progress.xp,0)
-    )
+    Math.floor(enemyData.totalXp)
   );
-  setCompactStat(aiMoraleText,"❤",Math.round(aiMorale));
+  setCompactStat(aiMoraleText,"❤",Math.round(enemyData.averageMorale));
 }
 
 function updateUi(){
@@ -16144,8 +17339,10 @@ function updateUi(){
         `Gold ×${currentBiome.gold.toFixed(2)} · Holz ×${currentBiome.wood.toFixed(2)} · Stein ×${currentBiome.stone.toFixed(2)} · Verteidigung ×${currentBiome.defense.toFixed(2)} · Fernkampf ×${currentBiome.ranged.toFixed(2)}`;
     }
   }
-  updateCompactStatData();
-  const pV=villages.filter(v=>v.owner===FACTIONS.PLAYER),aV=villages.filter(v=>v.owner===FACTIONS.AI);
+  const enemyData=aggregateEnemyUiData();
+  updateCompactStatData(enemyData);
+  const pV=villages.filter(v=>v.owner===FACTIONS.PLAYER);
+  const aV=villages.filter(v=>enemyData.activeEnemies.some(faction=>faction.id===v.owner));
   goldText.textContent=`Gold ${Math.floor(playerRes.gold)}`;
   woodText.textContent=`Holz ${Math.floor(playerRes.wood)}`;
   stoneText.textContent=`Stein ${Math.floor(playerRes.stone)}`;
@@ -16157,16 +17354,20 @@ function updateUi(){
   document.querySelector(".player-panel .panel-title").textContent=`${FACTIONS_DATA[playerFaction].icon} ${FACTIONS_DATA[playerFaction].name}`;
   document.querySelector(".player-panel .panel-title").style.color=FACTIONS_DATA[playerFaction].color;
 
-  aiGoldText.textContent=`Gold ${Math.floor(aiRes.gold)}`;
-  aiWoodText.textContent=`Holz ${Math.floor(aiRes.wood)}`;
-  aiStoneText.textContent=`Stein ${Math.floor(aiRes.stone)}`;
-  aiVillageText.textContent=`Siedlungen ${aV.length}`;
-  aiUnitText.textContent=`Truppen ${units.filter(u=>u.faction===FACTIONS.AI).length}`;
+  aiGoldText.textContent=`Gold ${Math.floor(enemyData.resources.gold)}`;
+  aiWoodText.textContent=`Holz ${Math.floor(enemyData.resources.wood)}`;
+  aiStoneText.textContent=`Stein ${Math.floor(enemyData.resources.stone)}`;
+  aiVillageText.textContent=`Gegner ${enemyData.activeEnemies.length} · Dörfer ${aV.length}`;
+  aiUnitText.textContent=`Truppen ${enemyData.unitsCount}`;
   aiTierText.textContent=`Ø Stufe ${aV.length?(aV.reduce((s,v)=>s+v.tier+1,0)/aV.length).toFixed(1):0}`;
-  aiXpText.textContent=`XP ${Math.floor(Object.values(aiUnitProgress).reduce((s,p)=>s+p.xp,0))}`;
-  aiMoraleText.textContent=`Moral ${Math.round(aiMorale)}`;
-  document.querySelector(".ai-panel .panel-title").textContent=`${FACTIONS_DATA[aiFaction].icon} ${FACTIONS_DATA[aiFaction].name}`;
-  document.querySelector(".ai-panel .panel-title").style.color=FACTIONS_DATA[aiFaction].color;
+  aiXpText.textContent=`XP ${Math.floor(enemyData.totalXp)}`;
+  aiMoraleText.textContent=`Moral ${Math.round(enemyData.averageMorale)}`;
+  const aiPanelTitle=document.querySelector(".ai-panel .panel-title");
+  if(aiPanelTitle){
+    aiPanelTitle.textContent=`Gegnerübersicht`;
+    aiPanelTitle.style.color=factionPrimaryColor(getHostileFactionsForPlayer()[0]?.id||FACTIONS.AI);
+  }
+  updateEnemyStatusList(enemyData);
 
   seasonText.textContent=`${season().name} · ${Math.ceil(season().duration-seasonTimer)} s`;
 }
@@ -18088,7 +19289,7 @@ function updateRouteEditorHud(){
       if(!target)continue;
       const card=document.createElement("div");
       card.className="route-target-card";
-      const ownerIcon=target.owner===FACTIONS.PLAYER?"🔵":target.owner===FACTIONS.AI?"🔴":"⚪";
+      const ownerIcon=target.owner===FACTIONS.PLAYER?"🔵":isAiFaction(target.owner)?"🔴":"⚪";
       const defenseHp=typeof v189FormationTotalHp==='function'?Math.ceil(v189FormationTotalHp(target)):garrisonTotal(target);
       card.innerHTML=
         `<span class="route-chip-icon">${ownerIcon}</span>`+
@@ -19713,16 +20914,19 @@ function updateV184AiEconomy(dt){
   v184AiEconomyTimer+=dt;
   if(v184AiEconomyTimer<7)return;
   v184AiEconomyTimer=0;
-  const res=factionRes(FACTIONS.AI);
-  for(const v of villages){
-    if(v.owner!==FACTIONS.AI||!v.economy||v.economy==='none')continue;
-    const level=ensureEconomyLevel(v);
-    if(level>=V184_ECONOMY_MAX_LEVEL)continue;
-    const next=level+1;
-    const cost=v184EconomyUpgradeCost(v.economy,next);
-    if(canAfford(res,cost)&&Math.random()<.18){
-      pay(res,cost);
-      v.economyLevel=next;
+  const aiFactionIds=getSimulationReadyAiFactions().map(faction=>faction.id);
+  for(const factionId of aiFactionIds){
+    const res=factionRes(factionId);
+    for(const v of villages){
+      if(v.owner!==factionId||!v.economy||v.economy==='none')continue;
+      const level=ensureEconomyLevel(v);
+      if(level>=V184_ECONOMY_MAX_LEVEL)continue;
+      const next=level+1;
+      const cost=v184EconomyUpgradeCost(v.economy,next);
+      if(canAfford(res,cost)&&Math.random()<.18){
+        pay(res,cost);
+        v.economyLevel=next;
+      }
     }
   }
 }
@@ -20189,11 +21393,12 @@ v184FarmerTask=function(village){
 const v188BaseResetGame=resetGame;
 resetGame=function(){
   v188BaseResetGame();
+  const startIds=new Set(getActiveStartFactionVillageIds());
 
   for(const village of villages){
     const isStartVillage=
       village.owner!==FACTIONS.NEUTRAL &&
-      (village.isCapital || village.id==='P0' || village.id==='A0');
+      (village.isCapital || startIds.has(village.id));
     if(!isStartVillage)continue;
 
     const targetPopulation=Math.max(
@@ -20972,6 +22177,7 @@ resetGame=function(){
   if(V1814_TEST_MODE){
     playerRes={...V1814_TEST_START_RESOURCES};
     aiRes={...V1814_TEST_START_RESOURCES};
+    syncPreparedFactionStateContainers();
   }
   for(const village of villages){
     const timers=ensureVillageSpawnTimers(village);
@@ -21857,7 +23063,7 @@ v1813DrawVillageBuildings=function(village){
     baseUpdateEconomyV1822(dt);aiDefenseTimer+=dt;
     for(const v of villages){
       ensureDefenseBuildings(v);
-      if(v.owner!==FACTIONS.AI)continue;
+      if(!isAiFaction(v.owner))continue;
       const cap=Math.max(0,Math.min(3,v.tier||0));
       for(const key of Object.keys(MILITARY_FACILITIES))ensureFacilityLevels(v)[key]=Math.min(facilityLevel(v,key),cap);
       const econ=v1813EnsureEconomyBuildings(v);for(const key of ['farm','lumber','quarry','market'])econ[key]=Math.min(econ[key]||0,cap);
@@ -21871,12 +23077,13 @@ v1813DrawVillageBuildings=function(village){
     }
     if(aiDefenseTimer<6)return;aiDefenseTimer=0;
     for(const v of villages){
-      if(v.owner!==FACTIONS.AI||v.tier<1)continue;
+      if(!isAiFaction(v.owner)||v.tier<1)continue;
+      const aiResForVillage=factionRes(v.owner);
       for(const key of ['wall','tower']){
         const maxLevel=DEFENSE_BUILDINGS[key].maxLevel||3;
         const level=defenseLevel(v,key),next=level+1;if(next>maxLevel||!levelAllowed(v,next))continue;
-        const cost=defenseUpgradeCost(key,next);if(!canAfford(aiRes,cost))continue;
-        const oldMax=tier(v).hp;pay(aiRes,cost);ensureDefenseBuildings(v)[key]=next;
+        const cost=defenseUpgradeCost(key,next);if(!canAfford(aiResForVillage,cost))continue;
+        const oldMax=tier(v).hp;pay(aiResForVillage,cost);ensureDefenseBuildings(v)[key]=next;
         if(key==='wall')v.hp=Math.min(tier(v).hp,v.hp+(tier(v).hp-oldMax));
         return;
       }
@@ -22419,7 +23626,10 @@ v1813DrawVillageBuildings=function(village){
 
   // Bestehende Fortschrittsobjekte auf gültige Zahlen normalisieren, damit
   // alte Spielstände und frühere Testversionen im neuen Menü sofort zählen.
-  for(const faction of [FACTIONS.PLAYER,FACTIONS.AI]){
+  for(const faction of [
+    FACTIONS.PLAYER,
+    ...getInitializedEnemyFactions().map(item=>item.id)
+  ]){
     for(const type of ['farmer','sword','archer','cavalry','tower'])ensureProgressEntry(faction,type);
   }
 })();
@@ -22737,9 +23947,10 @@ body.game-started .player-panel{border-color:var(--faction-primary)!important;}
     previousResetGame();
     playerRes={gold:0,wood:0,stone:0};
     aiRes={gold:0,wood:0,stone:0};
+    syncPreparedFactionStateContainers();
 
     // Beide Startdörfer beginnen ausschließlich mit Bauern und voller Kapazität.
-    for(const id of ['P0','A0']){
+    for(const id of getActiveStartFactionVillageIds()){
       const village=getVillage(id);
       if(!village)continue;
       const capacity=populationCapacity(village);
@@ -22874,7 +24085,7 @@ body.game-started .player-panel{border-color:var(--faction-primary)!important;}
   function v1837PrepareStartState(){
     // Spieler und KI erhalten sofort vier echte Bauern-Einheiten zusätzlich
     // zur bereits vollen Zivilbevölkerung.
-    for(const id of ['P0','A0']){
+    for(const id of getActiveStartFactionVillageIds()){
       const village=getVillage(id);
       if(!village)continue;
       v1837SetFarmerCount(village,V1837_START_FARMERS);
@@ -23002,7 +24213,7 @@ body.game-started .player-panel{border-color:var(--faction-primary)!important;}
     const graph=v1838RoadAdjacency();
     const distance=new Map();
     const queue=[];
-    for(const id of ['P0','A0']){
+    for(const id of getActiveStartFactionVillageIds()){
       if(graph.has(id)&&!distance.has(id)){
         distance.set(id,0);
         queue.push(id);
@@ -23959,6 +25170,7 @@ Vorherige v18.48 Stabilitätsphase:
     menuGuideBtn:['Anleitung','Öffnet die ausführliche Spielanleitung mit Erklärungen zu Stadt, Produktion, Gebäuden, Garnison, Routen, Erfahrung und Kampf.'],
     playerFactionSelect:['Spielervolk','Bestimmt deine Farben, Vorteile, Nachteile und deinen bevorzugten Spielstil.'],
     aiFactionSelect:['KI-Volk','Bestimmt die Fraktion und damit die Stärken und Schwächen des Gegners.'],
+    aiCountSelect:['KI-Gegner','Legt fest, wie viele KI-Reiche für die Startkonfiguration vorgemerkt werden. Die Kartengröße begrenzt den Maximalwert automatisch.'],
     startDifficultySelect:['Schwierigkeit','Verändert Planung, Reaktion und wirtschaftliche Stärke der KI. Die grundlegenden Regeln bleiben für beide Seiten gleich.'],
     startSpeedSelect:['Spieltempo','Verändert, wie schnell die gesamte Simulation läuft. Timer, Bewegung, Kampf und Produktion folgen diesem Tempo.'],
     mapSizeSelect:['Kartengröße','Legt Anzahl der Siedlungen, Spieldauer und Zahl möglicher Fronten fest.'],
@@ -24386,7 +25598,19 @@ Vorherige v18.48 Stabilitätsphase:
     assault:{id:'assault',icon:'⚔',name:'Großangriff',description:'Bündelt Reserven für koordinierte Angriffe auf wichtige Ziele.'},
     recovery:{id:'recovery',icon:'🏥',name:'Neuordnung',description:'Ersetzt Verluste, stabilisiert Moral und hält Reserven zurück.'}
   };
-  const state={doctrine:'economy',since:0,lastEval:-999,lastMerge:-999,reason:'Spielaufbau'};
+  const doctrineStateByFaction=new Map();
+  function doctrineState(factionId){
+    if(!doctrineStateByFaction.has(factionId)){
+      doctrineStateByFaction.set(factionId,{
+        doctrine:'economy',
+        since:0,
+        lastEval:-999,
+        lastMerge:-999,
+        reason:'Spielaufbau'
+      });
+    }
+    return doctrineStateByFaction.get(factionId);
+  }
   const armyNames=['Erstes Heer','Zweites Heer','Drittes Heer','Viertes Heer','Fünftes Heer','Sechstes Heer','Siebtes Heer','Achtes Heer'];
 
   function activeArmies(faction){
@@ -24402,11 +25626,12 @@ Vorherige v18.48 Stabilitätsphase:
     for(const u of units){if(!u.dead&&u.faction===faction&&u.type!=='farmer')total++;}
     return total;
   }
-  function evaluateDoctrine(){
-    const aiVillages=villages.filter(v=>v.owner===FACTIONS.AI);
+  function evaluateDoctrine(factionId){
+    const state=doctrineState(factionId);
+    const aiVillages=villages.filter(v=>v.owner===factionId);
     if(!aiVillages.length)return;
     const playerVillages=villages.filter(v=>v.owner===FACTIONS.PLAYER);
-    const aiStrength=factionFieldStrength(FACTIONS.AI);
+    const aiStrength=factionFieldStrength(factionId);
     const playerStrength=factionFieldStrength(FACTIONS.PLAYER);
     const threatened=aiVillages.filter(v=>incomingHostileCount(v)>0||hostileNeighborCount(v)>0&&garrisonTotal(v)<garrisonReserveTarget(v));
     const avgGarrison=aiVillages.reduce((n,v)=>n+garrisonTotal(v),0)/Math.max(1,aiVillages.length);
@@ -24417,14 +25642,15 @@ Vorherige v18.48 Stabilitätsphase:
     else if(worldTime>210&&playerVillages.some(v=>garrisonTotal(v)<Math.max(3,garrisonReserveTarget(v)*.55))){next='raid';reason='Ein schwach verteidigtes Ziel wurde erkannt.';}
     if(next!==state.doctrine){state.doctrine=next;state.since=worldTime;}
     state.reason=reason;state.lastEval=worldTime;
-    applyDoctrine(aiVillages,playerVillages);
+    applyDoctrine(aiVillages,factionId);
   }
-  function weakestConnectedEnemy(village){
-    return getConnected(village).filter(v=>v.owner!==FACTIONS.AI).sort((a,b)=>(garrisonTotal(a)+militiaDefensePower(a))-(garrisonTotal(b)+militiaDefensePower(b)))[0]||null;
+  function weakestConnectedEnemy(village,factionId){
+    return getConnected(village).filter(v=>v.owner!==factionId).sort((a,b)=>(garrisonTotal(a)+militiaDefensePower(a))-(garrisonTotal(b)+militiaDefensePower(b)))[0]||null;
   }
-  function applyDoctrine(aiVillages){
+  function applyDoctrine(aiVillages,factionId){
+    const state=doctrineState(factionId);
     for(const v of aiVillages){
-      const enemy=weakestConnectedEnemy(v);
+      const enemy=weakestConnectedEnemy(v,factionId);
       if(state.doctrine==='defense'){
         v.frontPriority=hostileNeighborCount(v)>0||incomingHostileCount(v)>0;
         v.unitType=chooseTrainableUnitType(v,['sword','archer','cavalry']);
@@ -24440,7 +25666,8 @@ Vorherige v18.48 Stabilitätsphase:
       }
     }
   }
-  function doctrineFormation(composition,base){
+  function doctrineFormation(factionId,composition,base){
+    const state=doctrineState(factionId);
     if(state.doctrine==='defense')return 'shieldwall';
     if(state.doctrine==='raid'&&(composition.cavalry||0)>0)return 'wedge';
     if(state.doctrine==='assault'&&(composition.archer||0)>(composition.sword||0))return 'ranged';
@@ -24448,11 +25675,16 @@ Vorherige v18.48 Stabilitätsphase:
   }
   const originalDispatch=dispatchFactionArmy;
   dispatchFactionArmy=function(origin,target,composition,formation='mixed',manualOrder=false,routeMeta=null){
-    const chosen=origin?.owner===FACTIONS.AI?doctrineFormation(composition,formation):formation;
+    const factionId=origin?.owner;
+    const chosen=isAiFaction(factionId)?doctrineFormation(factionId,composition,formation):formation;
     const ok=originalDispatch(origin,target,composition,chosen,manualOrder,routeMeta);
     if(ok){
       const army=armies.get(nextArmyId-1);
-      if(army){armyDisplayName(army);army.doctrine=origin.owner===FACTIONS.AI?state.doctrine:'commander';army.commandCreatedAt=worldTime;}
+      if(army){
+        armyDisplayName(army);
+        army.doctrine=isAiFaction(factionId)?doctrineState(factionId).doctrine:'commander';
+        army.commandCreatedAt=worldTime;
+      }
     }
     return ok;
   };
@@ -24475,12 +25707,20 @@ Vorherige v18.48 Stabilitätsphase:
       primary.commanderName=armyDisplayName(primary);
       armies.delete(secondary.id);
     }
-    state.lastMerge=worldTime;
+    for(const faction of getSimulationReadyAiFactions()){
+      doctrineState(faction.id).lastMerge=worldTime;
+    }
   }
   const originalUpdateAi=updateAi;
   updateAi=function(dt){
-    if(worldTime-state.lastEval>=5)evaluateDoctrine();
-    if(worldTime-state.lastMerge>=2.5)mergeCompatibleArmies();
+    const simulated=getSimulationReadyAiFactions();
+    for(const faction of simulated){
+      const state=doctrineState(faction.id);
+      if(worldTime-state.lastEval>=5)evaluateDoctrine(faction.id);
+    }
+    if(simulated.some(faction=>worldTime-doctrineState(faction.id).lastMerge>=2.5)){
+      mergeCompatibleArmies();
+    }
     return originalUpdateAi(dt);
   };
 
@@ -24503,7 +25743,16 @@ Vorherige v18.48 Stabilitätsphase:
   function closeCenter(){$('commanderCenterOverlay').classList.remove('open');$('commanderCenterOverlay').setAttribute('aria-hidden','true');}
   $('commanderCenterBtn').addEventListener('click',openCenter);$('commanderCenterClose').addEventListener('click',closeCenter);$('commanderCenterOverlay').addEventListener('click',e=>{if(e.target===$('commanderCenterOverlay'))closeCenter();});
   $('commanderCenterBtn').dataset.help='Heeresführung';$('commanderCenterBtn').title='Zeigt alle aktiven Heere, ihre Zusammensetzung, Moral, Formation, Befehle und Ziele.';
-  window.DorfkriegCommanderStatus=()=>({aiDoctrine:{...doctrineDefs[state.doctrine],reason:state.reason,since:state.since},playerArmies:activeArmies(FACTIONS.PLAYER).map(a=>({id:a.id,name:armyDisplayName(a),members:armyMembers(a.id).length,order:a.order,targetId:a.targetId,morale:armyMoraleValue(a)})),aiArmies:activeArmies(FACTIONS.AI).length});
+  window.DorfkriegCommanderStatus=()=>{
+    const simulated=getSimulationReadyAiFactions();
+    const referenceFaction=simulated[0]?.id||getInitializedEnemyFactions()[0]?.id||null;
+    const doctrine=referenceFaction?doctrineState(referenceFaction):{doctrine:'economy',reason:'Keine aktive KI-Fraktion',since:0};
+    return {
+      aiDoctrine:{...doctrineDefs[doctrine.doctrine],reason:doctrine.reason,since:doctrine.since},
+      playerArmies:activeArmies(FACTIONS.PLAYER).map(a=>({id:a.id,name:armyDisplayName(a),members:armyMembers(a.id).length,order:a.order,targetId:a.targetId,morale:armyMoraleValue(a)})),
+      aiArmies:simulated.reduce((sum,faction)=>sum+activeArmies(faction.id).length,0)
+    };
+  };
 })();
 </script>
 
@@ -24675,7 +25924,13 @@ Vorherige v18.48 Stabilitätsphase:
   globalThis.isExploredByPlayerArea=isExploredByPlayerArea;
 
   function territoryFactions(){
-    return [FACTIONS.PLAYER,FACTIONS.AI];
+    if(typeof getTerritoryFactions==='function'){
+      const runtimeFactionIds=getTerritoryFactions().map(faction=>faction.id);
+      if(runtimeFactionIds.length)return runtimeFactionIds;
+    }
+    return [FACTIONS.PLAYER,FACTIONS.AI].filter(factionId=>
+      villages.some(village=>village.owner===factionId)
+    );
   }
 
   function territorySignature(){
@@ -25432,6 +26687,22 @@ Vorherige v18.48 Stabilitätsphase:
 
     drawFactionTerritoryBorders();
   };
+  const baseResetTerritoryCaches=globalThis.resetGame;
+  if(typeof baseResetTerritoryCaches==='function'){
+    globalThis.resetGame=function(){
+      territoryState.signature='';
+      territoryState.ownerGrid=[];
+      territoryState.villageGrid=[];
+      territoryState.villageCellIndices.clear();
+      territoryState.villageTerritoryRadius.clear();
+      territoryState.factionMasks.clear();
+      territoryState.borderPaths.clear();
+      villageVisionState.signature='';
+      villageIntel.clear();
+      resetExploredAreaMemory();
+      return baseResetTerritoryCaches.apply(this,arguments);
+    };
+  }
   window.DorfkriegFogIntel=()=>({
     knownVillages:[...villageIntel.entries()].map(([id,data])=>({id,owner:data.owner,tier:data.tier,lastSeen:data.lastSeen})),
     territorySignature:territoryState.signature
@@ -26052,7 +27323,7 @@ const TYPE={
 const esc=t=>String(t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const now=()=>Number(typeof worldTime!=='undefined'?worldTime:0);
 const military=u=>u&&!u.dead&&u.type!=='farmer';
-const factionName=f=>f===FACTIONS.PLAYER?'Dein Reich':f===FACTIONS.AI?'KI-Reich':'Neutral';
+const factionName=f=>f===FACTIONS.PLAYER?'Dein Reich':isAiFaction(f)?'KI-Reich':'Neutral';
 
 function roadCandidates(){
  const list=[];
@@ -26102,8 +27373,11 @@ function generate(){
  else if(!state.generated)messages.notify('⚠ Sonderorte konnten nicht erzeugt werden','Die Kartenplatzierung wird erneut versucht.',{type:'warning',duration:7});
 }
 function nearbyForces(x,y,r=58){
- const counts={[FACTIONS.PLAYER]:0,[FACTIONS.AI]:0};
- for(const u of units||[]){if(!military(u)||Math.hypot(u.x-x,u.y-y)>r)continue;if(counts[u.faction]!=null)counts[u.faction]++;}
+ const counts={};
+ for(const u of units||[]){
+  if(!military(u)||Math.hypot(u.x-x,u.y-y)>r)continue;
+  counts[u.faction]=(counts[u.faction]||0)+1;
+ }
  return counts;
 }
 function updateCapture(loc,dt){
@@ -26114,13 +27388,15 @@ function updateCapture(loc,dt){
   return;
  }
  const c=nearbyForces(loc.x,loc.y);
- const p=c[FACTIONS.PLAYER],a=c[FACTIONS.AI];
- let contender=null;if(p>0&&a===0)contender=FACTIONS.PLAYER;else if(a>0&&p===0)contender=FACTIONS.AI;
+ const contenders=Object.entries(c).filter(([,count])=>count>0).map(([faction])=>faction);
+ let contender=null;
+ if(contenders.length===1)contender=contenders[0];
  const rec=state.capture.get(loc.id)||{faction:null,progress:0};
  if(!contender){rec.progress=Math.max(0,rec.progress-dt*.35);if(!rec.progress)rec.faction=null;state.capture.set(loc.id,rec);return;}
  if(rec.faction!==contender){rec.faction=contender;rec.progress=0;}
  if(loc.owner===contender){rec.progress=0;state.capture.set(loc.id,rec);return;}
- rec.progress+=dt*(1+Math.min(2,(contender===FACTIONS.PLAYER?p:a-1)*.18));
+ const contenderPower=Math.max(0,(c[contender]||0)-1);
+ rec.progress+=dt*(1+Math.min(2,contenderPower*.18));
  if(rec.progress>=5){
   loc.owner=contender;
   locations.update?.(loc.id,{owner:contender,meta:{capturedAt:now()}});
@@ -26132,7 +27408,7 @@ function updateCapture(loc,dt){
 function payIncome(dt){
  for(const loc of liveLocations()){
   if(!loc.active||!TYPE[loc.type]?.income||loc.owner===FACTIONS.NEUTRAL)continue;
-  const res=loc.owner===FACTIONS.PLAYER?playerRes:aiRes;if(!res)continue;
+  const res=factionRes(loc.owner);if(!res)continue;
   const level=Math.max(1,Math.floor(Number(loc.level)||1));
   const amount=Number(globalThis.getSpecialLocationEffectValue?.(loc.specialType||loc.type,level));
   for(const [key,rate] of Object.entries(TYPE[loc.type].income))res[key]=(Number(res[key])||0)+(Number.isFinite(amount)?amount:rate)*dt;
@@ -26150,11 +27426,16 @@ function spawnBandit(){
 function updateBandit(camp,dt){
  if(!camp.active)return;
  if(now()>=camp.expires){camp.active=false;messages.notify('🏴 Banditen abgezogen','Das Lager wurde verlassen und die Beute ist verschwunden.',{duration:5});return;}
- const c=nearbyForces(camp.x,camp.y,70);const p=c[FACTIONS.PLAYER],a=c[FACTIONS.AI];
- let attacker=null,power=0;if(p>0&&a===0){attacker=FACTIONS.PLAYER;power=p;}else if(a>0&&p===0){attacker=FACTIONS.AI;power=a;}else return;
+ const c=nearbyForces(camp.x,camp.y,70);
+ const contenders=Object.entries(c).filter(([,count])=>count>0).map(([faction])=>faction);
+ let attacker=null,power=0;
+ if(contenders.length===1){
+  attacker=contenders[0];
+  power=c[attacker]||0;
+ }else return;
  camp.defenders=Math.max(0,camp.defenders-dt*(.32+power*.10));
  if(camp.defenders<=0){
-  camp.active=false;const res=attacker===FACTIONS.PLAYER?playerRes:aiRes;
+  camp.active=false;const res=factionRes(attacker);
   for(const [k,v] of Object.entries(camp.reward))res[k]=(Number(res[k])||0)+v;
   messages.notify('🏆 Banditenlager geräumt',`${factionName(attacker)} erhält ${camp.reward.gold} Gold, ${camp.reward.wood} Holz und ${camp.reward.stone} Stein.`,{type:attacker===FACTIONS.PLAYER?'reward':'warning',duration:8});
  }
@@ -26374,7 +27655,7 @@ globalThis.DorfkriegLivingWorld=()=>({version:'19.2',audit:M.validate(),location
 
     const label=loc.meta?.name||t.name;
     ctx.font='900 12px system-ui';ctx.textAlign='center';ctx.textBaseline='middle';ctx.lineWidth=4;ctx.strokeStyle='rgba(0,0,0,.9)';ctx.strokeText(label,0,size+15);ctx.fillStyle='#fff1cf';ctx.fillText(label,0,size+15);
-    ctx.font='700 10px system-ui';const sub=loc.owner===FACTIONS.NEUTRAL?t.bonus:(loc.owner===FACTIONS.PLAYER?'Dein Sonderort':'KI kontrolliert');ctx.strokeText(sub,0,size+29);ctx.fillStyle=loc.owner===FACTIONS.AI?'#ffaaa2':'#d8cfb5';ctx.fillText(sub,0,size+29);
+    ctx.font='700 10px system-ui';const sub=loc.owner===FACTIONS.NEUTRAL?t.bonus:(loc.owner===FACTIONS.PLAYER?'Dein Sonderort':'Gegner kontrolliert');ctx.strokeText(sub,0,size+29);ctx.fillStyle=isAiFaction(loc.owner)?'#ffaaa2':'#d8cfb5';ctx.fillText(sub,0,size+29);
     ctx.restore();
   }
   function drawWorldObjects(){
@@ -26450,7 +27731,7 @@ globalThis.DorfkriegLivingWorld=()=>({version:'19.2',audit:M.validate(),location
     if(!best)return;
     const t=TYPES[best.type];
     popupTitle.textContent=`${t.icon} ${best.meta?.name||t.name}`;
-    popupStats.innerHTML=`<span class="pill">${best.owner===FACTIONS.PLAYER?'Dein Reich':best.owner===FACTIONS.AI?'KI-Reich':'Neutral'}</span><span class="pill">${t.bonus}</span>`;
+    popupStats.innerHTML=`<span class="pill">${best.owner===FACTIONS.PLAYER?'Dein Reich':isAiFaction(best.owner)?'KI-Reich':'Neutral'}</span><span class="pill">${t.bonus}</span>`;
     popupContent.innerHTML=`<div class="card"><h3>Echter Weltort</h3><p><strong>${t.name}</strong> liegt dauerhaft auf der Karte und kann von beiden Reichen kontrolliert werden.</p><p><strong>Wirkung:</strong> ${t.bonus}</p><p>Bringe Militäreinheiten für ungefähr fünf Sekunden in den markierten Bereich. Bei gleichzeitig anwesenden Gegnern pausiert die Eroberung.</p></div>`;
     openPopupOverlay();
   },true);
@@ -26834,6 +28115,7 @@ const specialRoads=new Map();
 let selectedSpecialId=null;
 let selectedOriginId=null;
 let aiClock=0;
+let aiMissionRoundRobinIndex=0;
 const missions=[];
 
 const activeLocations=()=>{
@@ -26956,7 +28238,7 @@ function availableComposition(village,ratio=.35){
 function dispatchMission(origin,loc,faction=origin?.owner){
  const road=specialRoads.get(loc?.id)||buildRoad(loc);if(!origin||!loc||!road||road.anchorId!==origin.id)return false;
  if(missions.some(m=>!m.dead&&m.originId===origin.id&&m.locationId===loc.id&&m.faction===faction))return false;
- const comp=availableComposition(origin,faction===FACTIONS.AI?.42:.38);let total=0;
+ const comp=availableComposition(origin,isAiFaction(faction)?.42:.38);let total=0;
  for(const type of ['farmer','sword','archer','cavalry']){const removed=removeFromGarrison(origin,type,comp[type]);comp[type]=removed;total+=removed;}
  if(total<1)return false;
  let slot=0;
@@ -26980,14 +28262,37 @@ function updateMissions(dt){
  }
  const groups=missionGroups();
  for(const loc of activeLocations()){
-  const player=groups.get(`${loc.id}:${FACTIONS.PLAYER}`)||[],ai=groups.get(`${loc.id}:${FACTIONS.AI}`)||[];
-  const pArr=player.filter(x=>x.progress>=1&&Math.hypot(x.x-loc.x,x.y-loc.y)<=22),aArr=ai.filter(x=>x.progress>=1&&Math.hypot(x.x-loc.x,x.y-loc.y)<=22);
-  if(pArr.length&&aArr.length){
-   const pDamage=pArr.reduce((n,x)=>n+x.damage,0)*dt*.22,aDamage=aArr.reduce((n,x)=>n+x.damage,0)*dt*.22;
-   function hurt(list,dmg){for(const u of list){if(dmg<=0)break;const take=Math.min(u.hp,dmg);u.hp-=take;dmg-=take;if(u.hp<=0)u.dead=true;}}
-   hurt(aArr,pDamage);hurt(pArr,aDamage);continue;
+  const arrivalsByFaction=new Map();
+  for(const mission of missions){
+   if(mission.dead||mission.locationId!==loc.id)continue;
+   if(mission.progress<1||Math.hypot(mission.x-loc.x,mission.y-loc.y)>22)continue;
+   if(!arrivalsByFaction.has(mission.faction))arrivalsByFaction.set(mission.faction,[]);
+   arrivalsByFaction.get(mission.faction).push(mission);
   }
-  const arrivals=pArr.length?pArr:aArr; if(!arrivals.length)continue;
+
+  const factions=[...arrivalsByFaction.keys()];
+  if(factions.length>=2){
+   const hurt=(list,dmg)=>{for(const u of list){if(dmg<=0)break;const take=Math.min(u.hp,dmg);u.hp-=take;dmg-=take;if(u.hp<=0)u.dead=true;}};
+   const damageByFaction=new Map();
+   for(const faction of factions){
+    const list=arrivalsByFaction.get(faction)||[];
+    damageByFaction.set(faction,list.reduce((sum,item)=>sum+item.damage,0)*dt*.22);
+   }
+   for(const attacker of factions){
+    const enemies=factions.filter(faction=>faction!==attacker);
+    if(!enemies.length)continue;
+    const split=(damageByFaction.get(attacker)||0)/enemies.length;
+    for(const defender of enemies){
+      hurt(arrivalsByFaction.get(defender)||[],split);
+    }
+   }
+   continue;
+  }
+
+  const arrivals=factions.length===1
+   ? (arrivalsByFaction.get(factions[0])||[])
+   : [];
+  if(!arrivals.length)continue;
   const faction=arrivals[0].faction;
     if(loc.category==='special'&&loc.villageId){
      const anchor=getVillage(specialRoads.get(loc.id)?.anchorId);
@@ -27038,7 +28343,7 @@ function showRouteSelection(loc){
  selectedSpecialId=loc.id;selectedOriginId=pendingRouteEditor?.originId||null;
  const origin=getVillage(selectedOriginId),road=specialRoads.get(loc.id)||buildRoad(loc);
  if(!origin||!road||road.anchorId!==origin.id){hintText.textContent=`${loc.meta?.name||'Der Sonderort'} ist über ${road?.anchor?.name||'ein anderes Dorf'} erreichbar.`;return false;}
- if(routeTargetAnalysis){routeTargetAnalysis.innerHTML=`<div class="route-target-card"><strong>${iconFor(loc.type)} ${loc.meta?.name||'Sonderort'}</strong><span class="special-route-badge">Zufahrtsstraße · 5 s Besetzung</span><small>${loc.owner===FACTIONS.NEUTRAL?'Neutral':loc.owner===FACTIONS.PLAYER?'Eigener Sonderort':'KI kontrolliert'}</small></div>`;}
+ if(routeTargetAnalysis){routeTargetAnalysis.innerHTML=`<div class="route-target-card"><strong>${iconFor(loc.type)} ${loc.meta?.name||'Sonderort'}</strong><span class="special-route-badge">Zufahrtsstraße · 5 s Besetzung</span><small>${loc.owner===FACTIONS.NEUTRAL?'Neutral':loc.owner===FACTIONS.PLAYER?'Eigener Sonderort':'Gegner kontrolliert'}</small></div>`;}
  routeConfirmBtn.disabled=false;hintText.textContent=`${loc.meta?.name||'Sonderort'} als Expeditionsziel gewählt. Mit ✓ Truppen entsenden.`;return true;
 }
 window.DorfkriegSelectSpecialRouteAt=function(x,y){
@@ -27070,9 +28375,17 @@ window.DorfkriegClearSpecialRouteSelection=clearSelection;
 
 function updateAI(dt){
  aiClock+=dt;if(aiClock<14)return;aiClock=0;ensureRoads();
- const options=activeLocations().filter(loc=>loc.owner!==FACTIONS.AI).map(loc=>({loc,road:specialRoads.get(loc.id)})).filter(x=>x.road&&x.road.anchor?.owner===FACTIONS.AI);
+ const aiFactions=(typeof getSimulationReadyAiFactions==='function'?getSimulationReadyAiFactions():[]).map(f=>f.id);
+ if(!aiFactions.length){aiMissionRoundRobinIndex=0;return;}
+ if(aiMissionRoundRobinIndex>=aiFactions.length)aiMissionRoundRobinIndex=0;
+ const factionId=aiFactions[aiMissionRoundRobinIndex%aiFactions.length];
+ aiMissionRoundRobinIndex=(aiMissionRoundRobinIndex+1)%aiFactions.length;
+
+ const options=activeLocations().filter(loc=>loc.owner!==factionId).map(loc=>({loc,road:specialRoads.get(loc.id)})).filter(x=>x.road&&x.road.anchor?.owner===factionId);
  options.sort((a,b)=>(a.loc.owner===FACTIONS.PLAYER?-20:0)-(b.loc.owner===FACTIONS.PLAYER?-20:0));
- for(const item of options){if(!missions.some(m=>!m.dead&&m.faction===FACTIONS.AI&&m.locationId===item.loc.id)&&dispatchMission(item.road.anchor,item.loc,FACTIONS.AI))break;}
+ for(const item of options){
+  if(!missions.some(m=>!m.dead&&m.faction===factionId&&m.locationId===item.loc.id)&&dispatchMission(item.road.anchor,item.loc,factionId))break;
+ }
 }
 
 const oldDrawRoads=globalThis.drawRoads;
@@ -27092,7 +28405,7 @@ if(typeof oldUpdate==='function')globalThis.update=function(dt){
  return r;
 };
 const oldReset=globalThis.resetGame;
-if(typeof oldReset==='function')globalThis.resetGame=function(){missions.length=0;specialRoads.clear();clearSelection();const r=oldReset.apply(this,arguments);setTimeout(ensureRoads,0);return r;};
+if(typeof oldReset==='function')globalThis.resetGame=function(){missions.length=0;specialRoads.clear();clearSelection();aiMissionRoundRobinIndex=0;const r=oldReset.apply(this,arguments);setTimeout(ensureRoads,0);return r;};
 
 window.DorfkriegSpecialRoads=()=>({version:VERSION,roads:[...specialRoads.values()].map(r=>({locationId:r.locationId,anchorId:r.anchorId,length:+r.totalLength.toFixed(1)})),missions:missions.map(m=>({type:m.type,faction:m.faction,locationId:m.locationId,progress:+m.progress.toFixed(2)}))});
 setTimeout(ensureRoads,0);
@@ -27547,7 +28860,7 @@ if(typeof previousCancel==='function')globalThis.cancelRouteEditing=function(){
   const baseMinimapVillageVisible=globalThis.minimapVillageVisible;
   if(typeof baseMinimapVillageVisible==='function'){
     globalThis.minimapVillageVisible=function(village){
-      if(!debugState.showAi&&village?.owner===FACTIONS.AI)return false;
+      if(!debugState.showAi&&isAiFaction(village?.owner))return false;
       return baseMinimapVillageVisible.apply(this,arguments);
     };
   }
@@ -27555,7 +28868,7 @@ if(typeof previousCancel==='function')globalThis.cancelRouteEditing=function(){
   const baseDrawSettlement=globalThis.drawSettlement;
   if(typeof baseDrawSettlement==='function'){
     globalThis.drawSettlement=function(village){
-      if(!debugState.showAi&&village?.owner===FACTIONS.AI)return;
+      if(!debugState.showAi&&isAiFaction(village?.owner))return;
       return baseDrawSettlement.apply(this,arguments);
     };
   }
@@ -27563,7 +28876,7 @@ if(typeof previousCancel==='function')globalThis.cancelRouteEditing=function(){
   const baseDrawUnit=globalThis.drawUnit;
   if(typeof baseDrawUnit==='function'){
     globalThis.drawUnit=function(unit){
-      if(!debugState.showAi&&unit?.faction===FACTIONS.AI)return;
+      if(!debugState.showAi&&isAiFaction(unit?.faction))return;
       return baseDrawUnit.apply(this,arguments);
     };
   }
@@ -27571,7 +28884,7 @@ if(typeof previousCancel==='function')globalThis.cancelRouteEditing=function(){
   const baseDrawFormationIndicator=globalThis.drawFormationIndicator;
   if(typeof baseDrawFormationIndicator==='function'){
     globalThis.drawFormationIndicator=function(unit){
-      if(!debugState.showAi&&unit?.faction===FACTIONS.AI)return;
+      if(!debugState.showAi&&isAiFaction(unit?.faction))return;
       return baseDrawFormationIndicator.apply(this,arguments);
     };
   }

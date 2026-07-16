@@ -9929,6 +9929,9 @@ function generateMap(sizeKey,seed=null){
   generateNatureLayer();
   refreshBridgeGraphics();
   updateWorldCameraConfig();
+  if(typeof clearRouteDisplayCache==="function"){
+    clearRouteDisplayCache("generate-map");
+  }
 }
 
 function regenerateMapEnvironment(){
@@ -14296,6 +14299,9 @@ function resetGame(){
   closePopup();
   hintText.textContent="v18.4 aktiv: Dorfbelagerungen, Garnisonsverteidigung und Straßenkämpfe nutzen gemeinsame Einheitenwerte.";
   refreshBridgeGraphics();
+  if(typeof clearRouteDisplayCache==="function"){
+    clearRouteDisplayCache("reset-game");
+  }
   updateUi();
 }
 
@@ -19854,37 +19860,298 @@ function validateVillageRoute(village){
   return true;
 }
 
+let routeDisplayRoadsRef=null;
+let routeDisplayRoadsLength=-1;
+let routeDisplayRoadRevision=0;
+const routeDisplaySegmentCache=new Map();
+const routeDisplayRouteCache=new Map();
 
-function drawRouteArrow(from,to,color="rgba(76,235,126,.96)",width=5){
-  if(!from||!to)return;
-  const dx=to.x-from.x;
-  const dy=to.y-from.y;
-  const length=Math.hypot(dx,dy)||1;
-  const ux=dx/length;
-  const uy=dy/length;
-  const startPad=24/Math.max(.75,camera.zoom);
-  const endPad=31/Math.max(.75,camera.zoom);
-  const x1=from.x+ux*startPad;
-  const y1=from.y+uy*startPad;
-  const x2=to.x-ux*endPad;
-  const y2=to.y-uy*endPad;
-  const head=12/Math.max(.75,camera.zoom);
+function clearRouteDisplayCache(_reason=""){
+  routeDisplayRoadRevision++;
+  routeDisplayRoadsRef=roads;
+  routeDisplayRoadsLength=Array.isArray(roads)?roads.length:0;
+  routeDisplaySegmentCache.clear();
+  routeDisplayRouteCache.clear();
+}
 
-  ctx.strokeStyle=color;
-  ctx.fillStyle=color;
-  ctx.lineWidth=width/Math.max(.75,camera.zoom);
-  ctx.setLineDash([]);
+function ensureRouteDisplayCacheFresh(){
+  const currentLength=Array.isArray(roads)?roads.length:0;
+  if(routeDisplayRoadsRef!==roads||routeDisplayRoadsLength!==currentLength){
+    clearRouteDisplayCache("roads-changed");
+  }
+}
+
+function pruneRouteDisplayCaches(){
+  if(routeDisplaySegmentCache.size>320){
+    routeDisplaySegmentCache.clear();
+  }
+  if(routeDisplayRouteCache.size>220){
+    routeDisplayRouteCache.clear();
+  }
+}
+
+function getDisplaySegmentPoints(fromId,toId){
+  ensureRouteDisplayCacheFresh();
+  const key=`${routeDisplayRoadRevision}:${fromId}>${toId}`;
+  if(routeDisplaySegmentCache.has(key)){
+    return routeDisplaySegmentCache.get(key);
+  }
+
+  const from=getVillage(fromId);
+  const to=getVillage(toId);
+  if(!from||!to||fromId===toId){
+    routeDisplaySegmentCache.set(key,null);
+    return null;
+  }
+
+  if(!routeSegmentIsValid(fromId,toId)){
+    routeDisplaySegmentCache.set(key,null);
+    return null;
+  }
+
+  if(typeof getOrganicRoadPath!=="function"){
+    routeDisplaySegmentCache.set(key,null);
+    return null;
+  }
+
+  const path=getOrganicRoadPath(fromId,toId);
+  if(!path||!Array.isArray(path.points)||path.points.length<2){
+    routeDisplaySegmentCache.set(key,null);
+    return null;
+  }
+
+  let points=path.points;
+  const forward=path.aId===fromId&&path.bId===toId;
+  const backward=path.aId===toId&&path.bId===fromId;
+
+  if(backward){
+    points=[...points].reverse();
+  }else if(!forward){
+    const first=points[0];
+    const last=points[points.length-1];
+    const firstDistance=Math.hypot(first.x-from.x,first.y-from.y);
+    const lastDistance=Math.hypot(last.x-from.x,last.y-from.y);
+    if(lastDistance<firstDistance){
+      points=[...points].reverse();
+    }else{
+      points=[...points];
+    }
+  }else{
+    points=[...points];
+  }
+
+  routeDisplaySegmentCache.set(key,points);
+  pruneRouteDisplayCaches();
+  return points;
+}
+
+function buildPolylineMetrics(points){
+  const cumulative=[0];
+  let total=0;
+
+  for(let i=1;i<points.length;i++){
+    total+=Math.hypot(
+      points[i].x-points[i-1].x,
+      points[i].y-points[i-1].y
+    );
+    cumulative.push(total);
+  }
+
+  return {totalLength:total,cumulative};
+}
+
+function buildRouteDisplayPolyline(villageIdSequence){
+  ensureRouteDisplayCacheFresh();
+  if(!Array.isArray(villageIdSequence)||villageIdSequence.length<2)return null;
+
+  const ids=villageIdSequence
+    .map(id=>String(id||""))
+    .filter(Boolean);
+
+  if(ids.length<2)return null;
+
+  const cacheKey=`${routeDisplayRoadRevision}:${ids.join(">")}`;
+  if(routeDisplayRouteCache.has(cacheKey)){
+    return routeDisplayRouteCache.get(cacheKey);
+  }
+
+  const points=[];
+  const nodeIndices=[];
+
+  for(let i=0;i<ids.length-1;i++){
+    const fromId=ids[i];
+    const toId=ids[i+1];
+    if(fromId===toId)continue;
+
+    const segment=getDisplaySegmentPoints(fromId,toId);
+    if(!segment||segment.length<2){
+      routeDisplayRouteCache.set(cacheKey,null);
+      return null;
+    }
+
+    if(points.length===0){
+      for(const point of segment){
+        points.push({x:point.x,y:point.y});
+      }
+    }else{
+      const last=points[points.length-1];
+      const first=segment[0];
+      const sameStart=Math.hypot(last.x-first.x,last.y-first.y)<0.1;
+      const startIndex=sameStart?1:0;
+      for(let p=startIndex;p<segment.length;p++){
+        points.push({x:segment[p].x,y:segment[p].y});
+      }
+    }
+
+    nodeIndices.push(points.length-1);
+  }
+
+  if(points.length<2){
+    routeDisplayRouteCache.set(cacheKey,null);
+    return null;
+  }
+
+  const metrics=buildPolylineMetrics(points);
+  if(metrics.totalLength<=0.01){
+    routeDisplayRouteCache.set(cacheKey,null);
+    return null;
+  }
+
+  const nodeDistances=nodeIndices
+    .filter((index,idx)=>idx<nodeIndices.length-1)
+    .map(index=>metrics.cumulative[index]||0);
+
+  const polyline={
+    ids,
+    points,
+    cumulative:metrics.cumulative,
+    totalLength:metrics.totalLength,
+    nodeDistances
+  };
+
+  routeDisplayRouteCache.set(cacheKey,polyline);
+  pruneRouteDisplayCaches();
+  return polyline;
+}
+
+function pointAndTangentAtDistance(polyline,distance){
+  if(!polyline||!Array.isArray(polyline.points)||polyline.points.length<2)return null;
+
+  const target=Math.max(0,Math.min(polyline.totalLength,distance));
+  const cumulative=polyline.cumulative;
+  const points=polyline.points;
+
+  let index=1;
+  while(index<cumulative.length&&cumulative[index]<target){
+    index++;
+  }
+
+  if(index>=points.length)index=points.length-1;
+
+  const startDistance=cumulative[index-1]||0;
+  const endDistance=cumulative[index]||startDistance;
+  const span=endDistance-startDistance;
+  const t=span>0?(target-startDistance)/span:0;
+
+  const a=points[index-1];
+  const b=points[index];
+  const dx=b.x-a.x;
+  const dy=b.y-a.y;
+  const length=Math.max(0.001,Math.hypot(dx,dy));
+
+  return {
+    x:a.x+dx*t,
+    y:a.y+dy*t,
+    tx:dx/length,
+    ty:dy/length
+  };
+}
+
+function drawRoutePolyline(polyline,options={}){
+  if(!polyline||polyline.totalLength<=0.01)return;
+
+  const zoomScale=Math.max(.72,camera.zoom);
+  const color=options.color||"rgba(76,235,126,.90)";
+  const edgeColor=options.edgeColor||"rgba(22,34,24,.46)";
+  const width=(options.width||5)/zoomScale;
+  const arrowSize=(options.arrowSize||8)/zoomScale;
+  const arrowSpacing=(options.arrowSpacing||76)/zoomScale;
+  const nodeGap=(options.nodeGap||16)/zoomScale;
+  const startPad=(options.startPad||22)/zoomScale;
+  const endPad=(options.endPad||28)/zoomScale;
+
+  ctx.save();
+  ctx.lineCap="round";
+  ctx.lineJoin="round";
+  ctx.setLineDash(Array.isArray(options.dash)?options.dash.map(value=>value/zoomScale):[]);
+
+  ctx.strokeStyle=edgeColor;
+  ctx.lineWidth=width+2/zoomScale;
   ctx.beginPath();
-  ctx.moveTo(x1,y1);
-  ctx.lineTo(x2,y2);
+  ctx.moveTo(polyline.points[0].x,polyline.points[0].y);
+  for(let i=1;i<polyline.points.length;i++){
+    ctx.lineTo(polyline.points[i].x,polyline.points[i].y);
+  }
   ctx.stroke();
 
+  ctx.strokeStyle=color;
+  ctx.lineWidth=width;
   ctx.beginPath();
-  ctx.moveTo(x2,y2);
-  ctx.lineTo(x2-ux*head-uy*head*.65,y2-uy*head+ux*head*.65);
-  ctx.lineTo(x2-ux*head+uy*head*.65,y2-uy*head-ux*head*.65);
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(polyline.points[0].x,polyline.points[0].y);
+  for(let i=1;i<polyline.points.length;i++){
+    ctx.lineTo(polyline.points[i].x,polyline.points[i].y);
+  }
+  ctx.stroke();
+
+  const usableLength=Math.max(0,polyline.totalLength-startPad-endPad);
+  if(usableLength>=arrowSpacing*.5){
+    ctx.setLineDash([]);
+    ctx.fillStyle=options.arrowColor||color;
+
+    for(let distance=startPad+arrowSpacing*.5;distance<polyline.totalLength-endPad;distance+=arrowSpacing){
+      const nearNode=polyline.nodeDistances.some(nodeDistance=>
+        Math.abs(nodeDistance-distance)<nodeGap
+      );
+      if(nearNode)continue;
+
+      const sample=pointAndTangentAtDistance(polyline,distance);
+      if(!sample)continue;
+
+      const ux=sample.tx;
+      const uy=sample.ty;
+
+      ctx.beginPath();
+      ctx.moveTo(sample.x+ux*arrowSize,sample.y+uy*arrowSize);
+      ctx.lineTo(
+        sample.x-ux*arrowSize*.75-uy*arrowSize*.55,
+        sample.y-uy*arrowSize*.75+ux*arrowSize*.55
+      );
+      ctx.lineTo(
+        sample.x-ux*arrowSize*.75+uy*arrowSize*.55,
+        sample.y-uy*arrowSize*.75-ux*arrowSize*.55
+      );
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+
+function drawRouteArrow(from,to,color="rgba(76,235,126,.96)",width=5){
+  if(!from||!to||from.id===to.id)return;
+  const polyline=buildRouteDisplayPolyline([from.id,to.id]);
+  if(!polyline)return;
+  drawRoutePolyline(polyline,{
+    color,
+    width,
+    arrowSize:8,
+    arrowSpacing:72,
+    startPad:26,
+    endPad:30,
+    nodeGap:14
+  });
 }
 
 function drawRouteSelectionGuides(){
@@ -19906,12 +20173,19 @@ function drawRouteSelectionGuides(){
   const selectedIds=new Set(pendingRouteEditor.draft.slice(1));
   for(const candidate of getConnected(origin).filter(Boolean)){
     const active=selectedIds.has(candidate.id);
-    drawRouteArrow(
-      origin,
-      candidate,
-      active?"rgba(75,236,128,.98)":"rgba(91,226,132,.58)",
-      active?7:4
-    );
+    const polyline=buildRouteDisplayPolyline([origin.id,candidate.id]);
+    if(polyline){
+      drawRoutePolyline(polyline,{
+        color:active?"rgba(75,236,128,.98)":"rgba(91,226,132,.58)",
+        width:active?7:4,
+        arrowColor:active?"rgba(116,255,170,.98)":"rgba(127,234,156,.76)",
+        arrowSize:active?8.5:7,
+        arrowSpacing:active?66:78,
+        startPad:25,
+        endPad:31,
+        nodeGap:14
+      });
+    }
 
     ctx.strokeStyle=active
       ? "rgba(109,255,158,.98)"
@@ -19939,7 +20213,20 @@ function drawVillageSpawnRoutes(){
       : [];
     for(const id of targets){
       const target=getVillage(id);
-      if(target)drawRouteArrow(village,target,"rgba(74,218,126,.78)",4.5);
+      if(!target)continue;
+      const polyline=buildRouteDisplayPolyline([village.id,target.id]);
+      if(!polyline)continue;
+      drawRoutePolyline(polyline,{
+        color:"rgba(74,218,126,.78)",
+        edgeColor:"rgba(18,32,21,.38)",
+        width:4.5,
+        arrowColor:"rgba(112,241,159,.82)",
+        arrowSize:7,
+        arrowSpacing:78,
+        startPad:24,
+        endPad:30,
+        nodeGap:14
+      });
     }
   }
   ctx.restore();
@@ -19960,26 +20247,24 @@ function drawVillageRoutes(){
     const route=normalizeVillageRoute(village);
     if(!route.length)continue;
 
-    const points=[
-      village,
-      ...route.map(getVillage).filter(Boolean)
-    ];
-
-    ctx.strokeStyle="rgba(89,221,139,.82)";
-    ctx.lineWidth=5/Math.max(.7,camera.zoom);
-    ctx.setLineDash([
-      14/Math.max(.7,camera.zoom),
-      9/Math.max(.7,camera.zoom)
-    ]);
-
-    ctx.beginPath();
-    ctx.moveTo(points[0].x,points[0].y);
-
-    for(let index=1;index<points.length;index++){
-      ctx.lineTo(points[index].x,points[index].y);
+    const routeIds=[village.id,...route];
+    const polyline=buildRouteDisplayPolyline(routeIds);
+    if(polyline){
+      drawRoutePolyline(polyline,{
+        color:"rgba(89,221,139,.82)",
+        edgeColor:"rgba(20,34,22,.40)",
+        width:5,
+        dash:[14,9],
+        arrowColor:"rgba(131,247,174,.88)",
+        arrowSize:7.5,
+        arrowSpacing:82,
+        startPad:24,
+        endPad:30,
+        nodeGap:15
+      });
     }
 
-    ctx.stroke();
+    const points=[village,...route.map(getVillage).filter(Boolean)];
 
     for(let index=1;index<points.length;index++){
       const point=points[index];
